@@ -24,7 +24,8 @@ START_NODB="${START_PFX}NO DATABASE_URL FOUND! Please provision a PostgreSQL add
 START_NODOMAIN="${START_PFX}DOMAIN is not set. Set it to the public HTTPS address of this app, for example https://my-vault.osc-fr1.scalingo.io"
 
 # start_run LABEL [NAME=value | -NAME]...: run start.sh under `env -i` with the
-# base environment changed by the arguments. Sets START_OUT, START_ERR,
+# base environment changed by the arguments (START_SCRIPT names another script,
+# for the self-tests only). Sets START_OUT, START_ERR,
 # START_RC, START_DIR and START_ENV (the file the fake binary wrote, absent
 # when it did not run). Records a problem when any secret is printed.
 start_run() {
@@ -47,7 +48,7 @@ EOF
     case "$arg" in -*) ;; *) envs[${#envs[@]}]="$arg" ;; esac
   done
   env -i PATH=/usr/bin:/bin VAULTWARDEN_HOME="$START_HOME" FAKE_ENV_OUT="$dir/env" \
-    "${envs[@]}" scripts/start.sh > "$dir/out" 2> "$dir/err"
+    "${envs[@]}" "${START_SCRIPT:-scripts/start.sh}" > "$dir/out" 2> "$dir/err"
   START_RC=$?
   START_OUT="$(cat "$dir/out")"
   START_ERR="$(cat "$dir/err")"
@@ -58,6 +59,13 @@ EOF
       *"$secret"*) problem scripts/start.sh "must never print a secret ($START_LABEL)" ;;
     esac
   done
+}
+
+# start_leak_selftest SCRIPT: run a script that prints a secret through
+# start_run, which must record a problem.
+start_leak_selftest() {
+  START_SCRIPT="$1" start_run "self-test"
+  start_clean
 }
 
 # start_clean: remove the files of the last start_run.
@@ -169,6 +177,19 @@ start_clean
 start_ok "no admin token" "absent ADMIN_TOKEN" -ADMIN_TOKEN
 start_no_admin_token "no admin token" "an absent ADMIN_TOKEN must stay absent"
 start_clean
+start_ok "no port" "absent PORT" -PORT
+start_eq "ROCKET_PORT must default to 8000 without PORT" "$(start_get ROCKET_PORT)" "8000"
+start_clean
+start_ok "no manifest" "absent manifest" "VAULTWARDEN_HOME=$START_HOME-no-manifest"
+start_eq "an absent manifest must give version unknown" "$START_OUT" "-----> Starting Vaultwarden unknown (attachments, Sends and keys stored in s3://my-bucket)"
+start_clean
+start_ok "no version" "manifest without VAULTWARDEN_VERSION" "VAULTWARDEN_HOME=$START_HOME-no-version"
+start_eq "a manifest without the version must give version unknown" "$START_OUT" "-----> Starting Vaultwarden unknown (attachments, Sends and keys stored in s3://my-bucket)"
+start_clean
+
+# --- the secret rule rejects a script that prints a secret (stdout, stderr)
+expect_problem "must never print a secret" start_leak_selftest tests/fixtures/start/leaky/stdout.sh
+expect_problem "must never print a secret" start_leak_selftest tests/fixtures/start/leaky/stderr.sh
 
 # --- fail early
 start_fail "no database" "$START_NODB" -DATABASE_URL
