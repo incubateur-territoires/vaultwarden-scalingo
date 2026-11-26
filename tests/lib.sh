@@ -2,10 +2,18 @@
 # Helpers shared by the check modules. Sourced, never executed.
 # Needs CHECK_LOG: a file that gets one line per problem.
 
-# problem FILE RULE: print "check: FILE: RULE" and count it.
+# problem FILE RULE: print "check: FILE: RULE" and count it. One problem is one
+# line: the lines of a multi-line RULE (a tool's report) are joined with " | ".
 problem() {
-  echo "check: $1: $2"
-  echo "check: $1: $2" >> "$CHECK_LOG"
+  local msg="" line
+  # Pure bash: the self-tests call this with an empty PATH.
+  while IFS= read -r line; do
+    [ -n "${line//[[:space:]]/}" ] && msg="${msg:+$msg | }$line"
+  done <<EOF
+$2
+EOF
+  echo "check: $1: $msg"
+  echo "check: $1: $msg" >> "$CHECK_LOG"
 }
 
 # warn MSG: print "check: MSG"; does not count as a problem.
@@ -66,6 +74,22 @@ expect_problem() {
   CHECK_LOG="$outer_log"
   if ! grep -qF -- "$rule" "$inner_log"; then
     problem "$fixture" "expected \"$rule\" to be reported"
+  fi
+  rm -f "$inner_log"
+}
+
+# expect_no_problem CMD...: run CMD (its last argument names the fixture) and
+# record a problem when it reported anything. Same isolation as expect_problem.
+expect_no_problem() {
+  local outer_log="$CHECK_LOG" inner_log fixture reported
+  for fixture; do :; done
+  inner_log="$(mktemp)"
+  CHECK_LOG="$inner_log"
+  "$@" > /dev/null 2>&1
+  CHECK_LOG="$outer_log"
+  if [ -s "$inner_log" ]; then
+    reported="$(head -n 1 "$inner_log")"
+    problem "$fixture" "expected no problem, got: ${reported#check: }"
   fi
   rm -f "$inner_log"
 }
