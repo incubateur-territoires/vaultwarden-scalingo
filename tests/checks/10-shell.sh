@@ -16,7 +16,7 @@ shell_files() {
 if optional_tool shellcheck; then
   while IFS= read -r file; do
     if ! out="$(shellcheck -x "$file" 2>&1)"; then
-      problem "$file" "shellcheck: $out"
+      problem "$file" "shellcheck: $(strip_leading_blank_lines "$out")"
     fi
   done <<EOF
 $(shell_files | sort)
