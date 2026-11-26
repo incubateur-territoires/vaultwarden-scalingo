@@ -17,7 +17,7 @@ Supported stacks: `scalingo-24` and `scalingo-26`. `scalingo-22` is deprecated a
 
 ## One-click deployment
 
-Click the button at the top and fill the form. It asks for five things:
+Click the button at the top and fill the form. It asks for six values:
 
 | Field | What to enter |
 | --- | --- |
@@ -53,18 +53,37 @@ In the Bitwarden app or browser extension, open the login screen, choose Setting
 
 ## Upgrade
 
-New versions arrive as pull requests in this repository:
+New versions arrive as pull requests in this repository, and the maintainer merges them:
 
-1. A pull request named `chore(deps): bump Vaultwarden from A to B` updates the upstream versions. The maintainer merges it and publishes a release.
-2. The release is built and checked on both stacks, then a second pull request, `chore(release): deploy <tag> ...`, pins it.
-3. Merge that one, then redeploy your app.
+1. A pull request named `chore(deps): bump Vaultwarden from A to B` updates the upstream versions. Once it is merged, the maintainer publishes a release.
+2. The release is built and checked on both stacks, then a second pull request, `chore(release): deploy <tag> ...`, pins it. Once the maintainer has merged it, the new version is on the `main` branch and your app can take it.
 
-Before you redeploy, take a Scalingo PostgreSQL backup. Database migrations run automatically at start and cannot be reversed.
+To take it, with the [Scalingo CLI](https://doc.scalingo.com/tools/cli/start) and your app name in place of `<app>`:
 
-If an upgrade fails, the app stays down and the old version is not lost:
+1. Take a PostgreSQL backup first. Database migrations run automatically at start and cannot be reversed.
 
-- if the migration did not run, redeploy the previous commit;
-- if it did run, restore the database backup (and, see Backups, the bucket from the same moment), then redeploy the previous commit.
+   ```
+   scalingo --app <app> --addon postgresql backups-create
+   ```
+
+2. Deploy the `main` branch of this repository to your app:
+
+   ```
+   scalingo --app <app> deploy https://github.com/incubateur-territoires/vaultwarden-scalingo/archive/refs/heads/main.tar.gz
+   ```
+
+   Restarting the app or redeploying its last deployment does not upgrade it: both reuse the version already deployed. This command is how Scalingo documents [updating an app created with the deploy button](https://doc.scalingo.com/platform/deployment/one-click-deploy#update-the-application).
+
+If the deployment fails, Scalingo keeps the previous version running ([boot errors](https://doc.scalingo.com/platform/app/troubleshooting/boot-errors)), and the app is not down. But the new version may have started a migration before it failed, so the old version can be running against a database that has already changed. To roll back:
+
+- if the new version failed before the database changed (a build error, or one of the start messages in Troubleshooting), there is nothing to roll back: fix the cause and deploy again;
+- if a migration ran, [restore the database backup](https://doc.scalingo.com/databases/postgresql/shared-resources/guides/restoring) you took before (and, see Backups, the bucket from the same moment), then deploy the previous version. Replace `<previous-commit>` with the commit of that version, found in the history of this repository:
+
+  ```
+  scalingo --app <app> deploy https://github.com/incubateur-territoires/vaultwarden-scalingo/archive/<previous-commit>.tar.gz
+  ```
+
+Scalingo itself warns that a rollback after a migration can create more problems than it solves ([rolling back](https://doc.scalingo.com/platform/app/rollback)): the backup is what you rely on.
 
 ## Backups
 
@@ -88,7 +107,7 @@ Set these as environment variables of the app. None is in the deploy form.
 
 ## Troubleshooting
 
-Messages starting with ` !     ` come from this repository's scripts. S3 problems are only visible in the application logs (`scalingo logs`), at start or at the first file write.
+Messages starting with ` !     ` come from this repository's scripts: the last four rows appear in the build log, the two before them in the application logs. S3 problems are only visible in the application logs (`scalingo logs`), at start or at the first file write.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
@@ -97,10 +116,10 @@ Messages starting with ` !     ` come from this repository's scripts. S3 problem
 | Wrong endpoint: the log shows a connection, DNS or redirect error | The endpoint or the region is not the one of the bucket | Fix `S3_ENDPOINT` and `S3_REGION`; try `S3_PATH_STYLE=true` if your provider needs it. |
 | NO DATABASE_URL FOUND! Please provision a PostgreSQL addon. | The app has no PostgreSQL add-on, or it is still provisioning | Add a PostgreSQL add-on, wait for it, restart. |
 | DOMAIN is not set, or DOMAIN must start with https:// | `DOMAIN` is missing or does not start with `https://` | Set `DOMAIN` to the public HTTPS address of the app. |
-| VERSIONS pins no release yet (build) | No release of this repository is pinned in `VERSIONS` | The maintainer publishes a release and merges the pin pull request. |
-| Could not download the release (build) | The pinned release or its assets do not exist | Check the release named in `VERSIONS` exists and has its assets. |
-| Checksum mismatch (build) | The downloaded file is not the one that was pinned, so it is not installed | Do not work around it: check the release assets, or ask the maintainer. |
-| The Vaultwarden binary does not run on stack (build) | The app is on an unsupported stack | Move the app to `scalingo-24` or `scalingo-26`. |
+| VERSIONS pins no release yet (RELEASE_TAG is empty). | No release of this repository is pinned in `VERSIONS` | The maintainer publishes a release and merges the pin pull request. |
+| Could not download `<url>`. Check that release `<tag>` exists and has its assets. | The pinned release or its assets do not exist | Check the release named in `VERSIONS` exists and has its assets. |
+| Checksum mismatch for `<asset>`: expected `<pin>`, got `<actual>`. Refusing to install. | The downloaded file is not the one that was pinned, so it is not installed | Do not work around it: check the release assets, or ask the maintainer. |
+| The Vaultwarden binary does not run on stack `<stack>`. Supported stacks: scalingo-24, scalingo-26. | The app is on an unsupported stack, or the pinned release holds a binary that fails on a supported one | If the stack is not `scalingo-24` or `scalingo-26`, move the app to one of them ([Scalingo stacks](https://doc.scalingo.com/platform/internals/stacks/overview)). If it is, the release is faulty: do not work around it, ask the maintainer. |
 
 ## Security
 
