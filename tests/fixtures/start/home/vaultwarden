@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fake Vaultwarden binary: records the environment it was started with.
+env > "$FAKE_ENV_OUT"
+exit 0
