@@ -9,6 +9,7 @@ on:
       - VERSIONS
       - .github/workflows/release.yml
       - scripts/package-release.sh
+      - scripts/lib/kv.sh
   workflow_dispatch:
   release:
     types: [published]
