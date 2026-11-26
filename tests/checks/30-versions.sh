@@ -84,6 +84,11 @@ EOF
 
 expect_problem "VAULTWARDEN_VERSION must look like" check_versions tests/fixtures/versions/bad-version.env
 expect_problem "WEB_VAULT_VERSION must not be latest" check_versions tests/fixtures/versions/latest.env
+expect_problem "WEB_VAULT_VERSION must look like v2026.10.1" check_versions tests/fixtures/versions/bad-web-version.env
+expect_problem "RELEASE_REPOSITORY must look like owner/name" check_versions tests/fixtures/versions/bad-repository.env
+expect_problem "RELEASE_TAG is not a plain tag name" check_versions tests/fixtures/versions/bad-tag-slash.env
+expect_problem "RELEASE_TAG is not a plain tag name" check_versions tests/fixtures/versions/bad-tag-leading-dash.env
+expect_problem "RELEASE_ASSET_SHA256 must be 64 lowercase hex" check_versions tests/fixtures/versions/bad-asset-checksum.env
 expect_problem "WEB_VAULT_SHA256 must be 64 lowercase hex" check_versions tests/fixtures/versions/short-checksum.env
 expect_problem "RELEASE_TAG is set but RELEASE_ASSET_SHA256 is empty" check_versions tests/fixtures/versions/tag-without-checksum.env
 expect_problem "RELEASE_ASSET_SHA256 is set but RELEASE_TAG is empty" check_versions tests/fixtures/versions/checksum-without-tag.env
