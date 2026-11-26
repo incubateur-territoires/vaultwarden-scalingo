@@ -6,7 +6,7 @@
 # Writes OUT_DIR/vaultwarden-scalingo-x86_64-linux.tar.gz and OUT_DIR/SHA256SUMS.
 # The asset has one top directory, extracted into the Scalingo build dir:
 #   vaultwarden/vaultwarden      the binary
-#   vaultwarden/web-vault/...    the content of the upstream web vault tarball
+#   vaultwarden/web-vault/...    the web-vault/ directory of the upstream web vault tarball
 #   vaultwarden/manifest         VAULTWARDEN_VERSION, WEB_VAULT_VERSION, SOURCE_COMMIT
 # Verifies nothing itself: the caller checks the source and web vault checksums.
 set -euo pipefail
@@ -45,8 +45,12 @@ trap 'rm -rf "$stage"' EXIT
 mkdir "$stage/vaultwarden"
 cp "$binary" "$stage/vaultwarden/vaultwarden"
 chmod 755 "$stage/vaultwarden/vaultwarden"
-tar -xzf "$web_vault_tarball" -C "$stage/vaultwarden"
-[ -d "$stage/vaultwarden/web-vault" ] || fail "$web_vault_tarball has no web-vault/ directory"
+# Extracted apart, then only web-vault/ is moved in: an entry of the tarball
+# cannot replace the binary or the manifest.
+mkdir "$stage/web"
+tar -xzf "$web_vault_tarball" -C "$stage/web"
+[ -d "$stage/web/web-vault" ] || fail "$web_vault_tarball has no web-vault/ directory"
+mv "$stage/web/web-vault" "$stage/vaultwarden/web-vault"
 {
   echo "VAULTWARDEN_VERSION=$vaultwarden_version"
   echo "WEB_VAULT_VERSION=$web_vault_version"

@@ -86,6 +86,28 @@ package_check() {
     problem "$script" "must fail without its three arguments"
   fi
   [ ! -e "$out/$asset_name" ] || problem "$script" "must not leave an asset behind after a refusal"
+
+  # A tarball entry named like a file of the asset must not replace it: only
+  # web-vault/ is taken from the tarball.
+  mkdir -p "$work/collide/web-vault"
+  echo "<html></html>" > "$work/collide/web-vault/index.html"
+  printf '#!/bin/sh\necho "replaced"\n' > "$work/collide/vaultwarden"
+  chmod +x "$work/collide/vaultwarden"
+  echo "SOURCE_COMMIT=replaced" > "$work/collide/manifest"
+  tar -czf "$work/collide.tar.gz" -C "$work/collide" web-vault vaultwarden manifest
+  rm -rf "$out" "$work/collided"
+  mkdir "$work/collided"
+  if bash "$script" "$work/vaultwarden" "$work/collide.tar.gz" "$out" > /dev/null 2>&1; then
+    tar -xzf "$out/$asset_name" -C "$work/collided"
+    if [ "$("$work/collided/vaultwarden/vaultwarden")" != "Vaultwarden 1.37.5" ]; then
+      problem "$script" "a web vault tarball entry named vaultwarden must not replace the binary"
+    fi
+    if [ -d "$work/collided/vaultwarden/vaultwarden" ] || grep -q replaced "$work/collided/vaultwarden/manifest"; then
+      problem "$script" "only web-vault/ may be taken from the web vault tarball"
+    fi
+  else
+    problem "$script" "must package a web vault tarball that has entries besides web-vault/"
+  fi
   rm -rf "$work"
 }
 
