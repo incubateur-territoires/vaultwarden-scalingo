@@ -68,6 +68,7 @@ check_scalingo_json() {
   operators="$(printf '%s\n' $SCALINGO_OPERATOR_FILLED | jq -Rn '[inputs]')"
 
   # Top-level keys, the one postgresql addon, the words of the top-level keys.
+  # shellcheck disable=SC2016 # $k, $n, $m, $words are jq variables
   scalingo_jq_rules "$file" '
     (["name", "description", "website", "repository", "logo", "env", "addons"][] as $k
       | select(has($k) | not) | "missing top-level key: \($k)"),
@@ -89,6 +90,7 @@ check_scalingo_json() {
   fi
 
   # The form: exactly the variables of the epic, each one well formed.
+  # shellcheck disable=SC2016 # $want, $have, $env, $k, $v, $words, $operators are jq variables
   scalingo_jq_rules "$file" '
     ($words | keys | map(select(startswith("@") | not))) as $want
     | (.env | keys) as $have
@@ -126,11 +128,15 @@ check_scalingo_json() {
 }
 
 fixtures=tests/fixtures/scalingo-json
+expect_problem "file not found" check_scalingo_json $fixtures/missing.json
 expect_problem "invalid JSON" check_scalingo_json $fixtures/invalid.json
 expect_problem "the top level must be an object" check_scalingo_json $fixtures/not-an-object.json
 expect_problem "missing top-level key: logo" check_scalingo_json $fixtures/no-logo.json
 expect_problem "addons must contain exactly one postgresql: addon (found 0)" check_scalingo_json $fixtures/no-postgresql.json
 expect_problem "addons must contain exactly one postgresql: addon (found 2)" check_scalingo_json $fixtures/two-postgresql.json
+expect_problem "addons must be an array" check_scalingo_json $fixtures/addons-not-array.json
+expect_problem "env must be an object" check_scalingo_json $fixtures/env-not-object.json
+expect_problem "env var DOMAIN must be an object" check_scalingo_json $fixtures/env-var-not-object.json
 expect_problem "missing env var: S3_BUCKET" check_scalingo_json $fixtures/env-missing.json
 expect_problem "unexpected env var: BUILDPACK_URL" check_scalingo_json $fixtures/env-extra.json
 expect_problem "env var DOMAIN has no description" check_scalingo_json $fixtures/no-description.json
@@ -138,9 +144,11 @@ expect_problem "env var S3_REGION description differs from the epic" check_scali
 expect_problem "env var SIGNUPS_ALLOWED is required but has no value" check_scalingo_json $fixtures/required-without-value.json
 expect_problem "env var S3_BUCKET is filled by the operator" check_scalingo_json $fixtures/operator-with-value.json
 expect_problem "ADMIN_TOKEN generator must be \"secret\"" check_scalingo_json $fixtures/admin-token-no-generator.json
+expect_problem "ADMIN_TOKEN must be required: false" check_scalingo_json $fixtures/admin-token-required.json
 expect_problem "SIGNUPS_ALLOWED value must be \"true\"" check_scalingo_json $fixtures/signups-false.json
 expect_problem "S3_PATH_STYLE value must be \"false\"" check_scalingo_json $fixtures/path-style-true.json
-expect_problem "description must be" check_scalingo_json $fixtures/description-changed-top.json
+expect_problem "S3_PATH_STYLE must be required: false" check_scalingo_json $fixtures/path-style-required.json
+expect_problem "description must be \"Vaultwarden, a lightweight Bitwarden-compatible password manager server, with PostgreSQL and S3 storage.\"" check_scalingo_json $fixtures/description-changed-top.json
 expect_problem "repository must be \"$SCALINGO_REPO_URL\"" check_scalingo_json $fixtures/other-repository.json
 
 check_scalingo_json scalingo.json
