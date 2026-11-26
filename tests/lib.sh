@@ -16,6 +16,22 @@ EOF
   echo "check: $1: $msg" >> "$CHECK_LOG"
 }
 
+# strip_leading_blank_lines TEXT: print TEXT without its leading empty lines
+# (shellcheck starts its report with one), so a label put in front of it, as in
+# "shellcheck: TEXT", is followed by the report's first line, not by a gap.
+strip_leading_blank_lines() {
+  local line started=""
+  while IFS= read -r line; do
+    if [ -z "$started" ] && [ -z "${line//[[:space:]]/}" ]; then
+      continue
+    fi
+    started=1
+    printf '%s\n' "$line"
+  done <<EOF
+$1
+EOF
+}
+
 # warn MSG: print "check: MSG"; does not count as a problem.
 warn() {
   echo "check: $*"

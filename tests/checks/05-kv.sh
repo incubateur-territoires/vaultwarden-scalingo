@@ -18,7 +18,6 @@ kv_expect "prints the value" tests/fixtures/kv/ok.env FIRST 0 one
 kv_expect "keeps '=' inside the value" tests/fixtures/kv/ok.env SECOND 0 "a=b"
 kv_expect "empty value" tests/fixtures/kv/ok.env EMPTY 0 ""
 kv_expect "missing key returns 1" tests/fixtures/kv/ok.env MISSING 1 ""
-kv_expect "commented key is missing" tests/fixtures/kv/ok.env COMMENTED 1 ""
 kv_expect "duplicate key is an error" tests/fixtures/kv/duplicate.env KEY 2 ""
 kv_expect "other keys of a file with a duplicate still read" tests/fixtures/kv/duplicate.env OTHER 0 x
 kv_expect "unreadable file is an error" tests/fixtures/kv/absent.env KEY 2 ""

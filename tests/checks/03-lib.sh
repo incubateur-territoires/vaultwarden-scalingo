@@ -16,3 +16,14 @@ if [ "$lib_lines" -ne 1 ] || [ "$lib_out_lines" -ne 1 ]; then
 fi
 rm -f "$lib_log"
 unset lib_log lib_out lib_lines lib_out_lines
+
+# shellcheck starts its report with an empty line: after the tool's name it must
+# not leave an empty segment ("shellcheck:  | In ...").
+lib_log="$(mktemp)"
+lib_report=$'\nIn some/file.sh line 3:\necho $x\n     ^-- SC2086: Double quote.\n'
+lib_out="$(CHECK_LOG="$lib_log" problem some/file.sh "shellcheck: $(strip_leading_blank_lines "$lib_report")")"
+if [ "$lib_out" != 'check: some/file.sh: shellcheck: In some/file.sh line 3: | echo $x |      ^-- SC2086: Double quote.' ]; then
+  problem tests/lib.sh "a tool's leading empty line must not show in the problem (got '$lib_out')"
+fi
+rm -f "$lib_log"
+unset lib_log lib_report lib_out
