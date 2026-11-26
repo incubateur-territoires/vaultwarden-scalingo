@@ -66,6 +66,12 @@ To take it, with the [Scalingo CLI](https://doc.scalingo.com/tools/cli/start) an
    scalingo --app <app> --addon postgresql backups-create
    ```
 
+   Then count the migrations the database has already run, and write the number down: it is how you will know, after a failed deployment, whether a migration ran. Open the database console with `scalingo --app <app> pgsql-console`, run this query, and leave with `\q`:
+
+   ```
+   SELECT count(*) FROM __diesel_schema_migrations;
+   ```
+
 2. Deploy the `main` branch of this repository to your app:
 
    ```
@@ -76,12 +82,19 @@ To take it, with the [Scalingo CLI](https://doc.scalingo.com/tools/cli/start) an
 
 If the deployment fails, Scalingo keeps the previous version running ([boot errors](https://doc.scalingo.com/platform/app/troubleshooting/boot-errors)), and the app is not down. But the new version may have started a migration before it failed, so the old version can be running against a database that has already changed. To roll back:
 
-- if the new version failed before the database changed (a build error, or one of the start messages in Troubleshooting), there is nothing to roll back: fix the cause and deploy again;
-- if a migration ran, [restore the database backup](https://doc.scalingo.com/databases/postgresql/shared-resources/guides/restoring) you took before (and, see Backups, the bucket from the same moment), then deploy the previous version. Replace `<previous-commit>` with the commit of that version, found in the history of this repository:
+1. Find out whether a migration ran. Vaultwarden does not say: it applies the pending migrations silently when it starts, and a failure is the only thing it reports (`Error running migrations`, in the application logs: `scalingo --app <app> logs --lines 200`). So ask the database. Run the query of the backup step again, in `pgsql-console`: if the count is higher than the number you wrote down, a migration ran.
+2. If the count is the same, nothing changed in the database and there is nothing to roll back: fix the cause (the deployment logs are `scalingo --app <app> deployment-logs`, and Troubleshooting lists the start messages) and deploy again.
+3. If the count is higher, or if you did not write it down, restore the backup and deploy the previous version. This is the safe choice when you cannot tell.
+   - [Restore the database backup](https://doc.scalingo.com/databases/postgresql/shared-resources/guides/restoring) you took before the upgrade, and, see Backups, the bucket from the same moment. The restore replaces the whole database: everything written after the backup is lost, such as items created or edited, new accounts and changed passwords, including what users saved while the old version kept running. The sooner you restore, the less is lost.
+   - Deploy the previous version. Replace `<previous-commit>` with the commit just before the merge of the latest `chore(release): deploy <tag>` pull request. In a clone of this repository, after `git fetch`, this prints it (`^1` is the first parent of that merge commit, the `main` branch as it was before the merge):
 
-  ```
-  scalingo --app <app> deploy https://github.com/incubateur-territoires/vaultwarden-scalingo/archive/<previous-commit>.tar.gz
-  ```
+     ```
+     git rev-parse "$(git log --first-parent --grep='chore(release): deploy' -n 1 --format=%H origin/main)^1"
+     ```
+
+     ```
+     scalingo --app <app> deploy https://github.com/incubateur-territoires/vaultwarden-scalingo/archive/<previous-commit>.tar.gz
+     ```
 
 Scalingo itself warns that a rollback after a migration can create more problems than it solves ([rolling back](https://doc.scalingo.com/platform/app/rollback)): the backup is what you rely on.
 

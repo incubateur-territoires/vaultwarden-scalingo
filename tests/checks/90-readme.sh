@@ -33,6 +33,9 @@ The Vaultwarden binary does not run on stack"
 README_BACKUP_CMD="backups-create"
 README_DEPLOY_CMD="archive/refs/heads/main.tar.gz"
 README_ROLLBACK_CMD="archive/<previous-commit>.tar.gz"
+# How the operator learns whether a migration ran, and which commit to roll back to.
+README_MIGRATION_QUERY="SELECT count(*) FROM __diesel_schema_migrations;"
+README_PREVIOUS_COMMIT="--grep='chore(release): deploy'"
 
 # readme_section FILE HEADING: the lines under "## HEADING", up to the next "## ".
 readme_section() {
@@ -107,6 +110,14 @@ EOF
     *"$README_ROLLBACK_CMD"*) ;;
     *) problem "$file" "Upgrade must give the rollback command (a URL ending $README_ROLLBACK_CMD)" ;;
   esac
+  case "$section" in
+    *"$README_MIGRATION_QUERY"*) ;;
+    *) problem "$file" "Upgrade must give the migration count query ($README_MIGRATION_QUERY)" ;;
+  esac
+  case "$section" in
+    *"$README_PREVIOUS_COMMIT"*) ;;
+    *) problem "$file" "Upgrade must say how to find the previous commit ($README_PREVIOUS_COMMIT)" ;;
+  esac
 
   section="$(readme_section "$file" "Troubleshooting")"
   while IFS= read -r symptom; do
@@ -146,6 +157,8 @@ if [ -f README.md ]; then
   expect_mutant_problem "Upgrade must give the backup command" 'backups-create'
   expect_mutant_problem "Upgrade must give the deploy command" 'archive/refs/heads/main'
   expect_mutant_problem "Upgrade must give the rollback command" 'archive/<previous-commit>'
+  expect_mutant_problem "Upgrade must give the migration count query" 'SELECT count'
+  expect_mutant_problem "Upgrade must say how to find the previous commit" "grep='chore(release): deploy'"
   expect_mutant_problem "deploy button must link to" 'cdn.scalingo.com/deploy/button.svg'
 fi
 check_readme README.md
