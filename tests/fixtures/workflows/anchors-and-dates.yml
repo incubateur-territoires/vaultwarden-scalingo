@@ -1,0 +1,12 @@
+name: anchors and dates
+on: [push]
+permissions:
+  contents: read
+x-defaults: &defaults
+  runs-on: ubuntu-24.04
+released: 2026-11-26
+jobs:
+  test:
+    <<: *defaults
+    steps:
+      - run: echo hello

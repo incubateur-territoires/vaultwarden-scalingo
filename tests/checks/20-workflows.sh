@@ -7,9 +7,9 @@
 # (YAML 1.1 reads the key `on` as the boolean true: both spellings are accepted.)
 check_workflow() {
   local file="$1" report line
-  report="$(ruby -ryaml -e '
+  report="$(ruby -ryaml -rdate -e '
     begin
-      doc = YAML.safe_load(File.read(ARGV[0]))
+      doc = YAML.safe_load(File.read(ARGV[0]), aliases: true, permitted_classes: [Date, Time])
     rescue StandardError, Psych::SyntaxError => e
       puts "invalid YAML: #{e.message.lines.first.to_s.strip}"
       exit
@@ -32,6 +32,7 @@ EOF
 
 expect_problem "invalid YAML" check_workflow tests/fixtures/workflows/broken-yaml.yml
 expect_problem "permissions must be declared" check_workflow tests/fixtures/workflows/no-permissions.yml
+expect_no_problem check_workflow tests/fixtures/workflows/anchors-and-dates.yml
 optional_tool_selftest actionlint
 
 if [ -d .github/workflows ]; then
