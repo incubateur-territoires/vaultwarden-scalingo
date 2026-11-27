@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Buildpack contract: the Procfile defines the process, nothing to add.
+echo "--- {}"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Buildpack contract: bin/compile BUILD_DIR CACHE_DIR ENV_DIR. The logic lives
+# in the deployed commit, so it is the app's own scripts/compile.sh that runs,
+# whichever repository the .buildpacks line points at.
+exec "$1/scripts/compile.sh" "$@"
