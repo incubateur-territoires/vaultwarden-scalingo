@@ -8,7 +8,7 @@ The migration keeps accounts, vaults, organisations, attachments, Sends and two-
 
 Two things to know:
 
-- Converting a SQLite or MySQL/MariaDB database to PostgreSQL is documented upstream, which calls it "unsupported" and "not robustly tested" ([Using the PostgreSQL Backend](https://github.com/dani-garcia/vaultwarden/wiki/Using-the-PostgreSQL-Backend)). Back up first, and rehearse.
+- Converting a SQLite or MySQL/MariaDB database to PostgreSQL is documented upstream, which calls it "unsupported" and says it "has not been robustly tested" ([Using the PostgreSQL Backend](https://github.com/dani-garcia/vaultwarden/wiki/Using-the-PostgreSQL-Backend)). Back up first, and rehearse.
 - The rehearsal (the whole migration into a throwaway app) and the cutover (switching the real address) are your acts. Nothing in this repository runs them for you.
 
 Check the versions of the source and of this project before anything else: see [Check the versions](#check-the-versions).
@@ -24,13 +24,14 @@ Send this message as it is. The `<...>` parts are yours to fill in.
 > 1. The Vaultwarden version we run, and the database it uses: SQLite, PostgreSQL or MySQL/MariaDB, with the database server version.
 > 2. If you can, stop the instance, then give us a consistent copy of the database:
 >    - SQLite: a copy made with `sqlite3 <database file> ".backup '<new file>'"`, not a copy of the running file.
->    - PostgreSQL: a dump made with `pg_dump --format=custom --no-owner --no-privileges <database>`.
+>    - PostgreSQL: a dump made with `pg_dump --format=custom --no-privileges <database>`.
 >    - MySQL or MariaDB: a full dump of the Vaultwarden database made with `mysqldump`.
 > 3. These items from the Vaultwarden data folder, with their sub-folders:
 >    - every file whose name starts with `rsa_key` (this is the signing key: without it, every user is logged out);
 >    - the folder `attachments/`;
 >    - the folder `sends/`;
->    - the file `config.json`, if it exists.
+>    - the file `config.json`, if it exists;
+>    - if you changed the settings `RSA_KEY_FILENAME`, `ATTACHMENTS_FOLDER` or `SENDS_FOLDER`: their values, and the key file and the folders they name instead of the ones above.
 > 4. Where the attachments and the Sends are stored: on the server's disk, or in an S3 bucket (then the bucket name and the prefix).
 > 5. The address the instance answers on (the `DOMAIN` setting), and the settings that are not default: mail server (host, port, sender; not the password), whether signups, invitations, emergency access, push notifications, Duo or Yubico are used.
 > 6. When we agree on a date: stop the instance (stop it, do not delete it), give us a last copy of items 2 and 3 taken after the stop, and keep the instance and its data untouched for at least 30 days after the switch.
@@ -42,20 +43,20 @@ Send this message as it is. The `<...>` parts are yours to fill in.
 Where each request comes from:
 
 - Point 2, SQLite: the `.backup` command uses SQLite's online backup API, which the wiki recommends for a database that may be in use ([Backing up your vault](https://github.com/dani-garcia/vaultwarden/wiki/Backing-up-your-vault), [SQLite command-line shell](https://www.sqlite.org/cli.html)).
-- Point 2, PostgreSQL: `--format=custom`, `--no-owner` and `--no-privileges` are options of `pg_dump` ([pg_dump](https://www.postgresql.org/docs/current/app-pgdump.html)).
+- Point 2, PostgreSQL: `--format=custom` and `--no-privileges` are options of `pg_dump`. The message leaves out `--no-owner`: the same page says it is ignored with `--format=custom` ([pg_dump](https://www.postgresql.org/docs/current/app-pgdump.html)).
 - Point 2, MySQL or MariaDB: `mysqldump` is the dump client; MariaDB's own is `mariadb-dump`, formerly `mysqldump` ([MariaDB documentation](https://mariadb.com/kb/en/mysqldump/)). The message names no option: your provider knows how it runs its server.
-- Point 3: the data folder items and what each is for ([Backing up your vault](https://github.com/dani-garcia/vaultwarden/wiki/Backing-up-your-vault)). The wiki marks `sends/` optional; this guide asks for it so that existing Sends keep working. The wiki lists several `rsa_key*` files. In 1.37.5 only `rsa_key.pem` is read, and when it is missing a new key is generated and written ([`initialize_keys`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/auth.rs#L74-L95)); the message asks for every file starting with `rsa_key` so that nothing is left behind.
+- Point 3: the data folder items and what each is for ([Backing up your vault](https://github.com/dani-garcia/vaultwarden/wiki/Backing-up-your-vault)). The wiki marks `sends/` optional; this guide asks for it so that existing Sends keep working. The wiki lists several `rsa_key*` files. In 1.37.5 only `rsa_key.pem` is read, and when it is missing a new key is generated and written ([`initialize_keys`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/auth.rs#L74-L95)); the message asks for every file starting with `rsa_key` so that nothing is left behind. In 1.37.5 the key file name and the attachments and Sends folders can be changed (`RSA_KEY_FILENAME`, `ATTACHMENTS_FOLDER`, `SENDS_FOLDER`: [`src/config.rs`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/config.rs#L527-L535)), so the message also asks for their values: a provider who renamed the key would otherwise have no file starting with `rsa_key`, and every user would be logged out without notice.
 
 ### If this is missing
 
 | Item | If it is missing |
 | --- | --- |
-| Database copy | Accounts, vaults, organisations, two-factor setups and devices are as of the date of the copy. Nothing created after it exists. |
+| Database copy | Missing: nothing can be migrated, use [the per-user fallback](#if-the-provider-gives-you-nothing). Older than the stop: accounts, vaults, organisations, two-factor setups and devices are as of the date of the copy, and nothing created after it exists. |
 | rsa_key files | A new signing key is created silently at the first start. Every device and web session is logged out once, and open invitations stop working. The data is intact. |
 | attachments/ | Items keep their attachment entries, but downloading an attachment fails. |
 | sends/ | Sends that carry a file still exist, but downloading the file fails. Text Sends are not affected. |
 | config.json | The settings saved from the admin page are lost. The values set as environment variables on the app apply. |
-| Vaultwarden version | The version rule in "Check the versions" cannot be applied: the rehearsal is then the only check. |
+| Vaultwarden version | STOP. The version rule in "Check the versions" cannot be applied, and a rehearsal does not prove it: do not rehearse or cut over until the provider gives the version. |
 | Same DOMAIN | Devices are logged out and must be given the new server URL; passkeys and WebAuthn keys, and email links, of the old address stop working (check this in the rehearsal). |
 
 The `rsa_key` row follows the wiki, which says deleting these files logs each user out and invalidates open invitation tokens ([Backing up your vault](https://github.com/dani-garcia/vaultwarden/wiki/Backing-up-your-vault)), and the source above.
@@ -80,7 +81,7 @@ If the provider will not hand over the data, or you cannot reach it, each user m
 1. Each user exports their vault as an encrypted JSON that is password protected, or as the `.zip (with attachments)` when the client offers it, and imports the file into an account they create on the new instance. An encrypted JSON that is "account restricted" can only be imported into the account that made it, so it is of no use here.
 2. Each organisation owner exports the organisation separately: an individual export does not include organisation-owned items.
 
-Source: [Bitwarden, export your data](https://bitwarden.com/help/export-your-data/). The help states what an export contains, not how each client imports it: this guide does not promise that an attachments zip imports on a given client, so test it in the rehearsal.
+Source: [Bitwarden, export your data](https://bitwarden.com/help/export-your-data/). The help says that, unless an export is encrypted, you must not store or send it over insecure channels such as email, and must delete it immediately after use. It does not list the `.zip` as encrypted, so treat it that way: do not email it, and delete it right after importing it. The help states what an export contains, not how each client imports it: this guide does not promise that an attachments zip imports on a given client, so test it in the rehearsal.
 
 What is lost this way:
 

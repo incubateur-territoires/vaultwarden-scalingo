@@ -22,7 +22,7 @@ GUIDE_HEADINGS="# Migrate an existing instance to Scalingo
 read -r -d "" GUIDE_NEEDLES <<'EOF'
 ## Before you start@@accounts, vaults, organisations, attachments, Sends and two-factor setups
 ## Before you start@@the `DOMAIN` setting, the signing key `rsa_key.pem`, and the data
-## Before you start@@not robustly tested
+## Before you start@@has not been robustly tested
 ## Before you start@@are your acts
 ## Before you start@@(#check-the-versions)
 ## What to ask your hosting provider@@A new signing key is created silently at the first start. Every device and web session is logged out once, and open invitations stop working. The data is intact.
@@ -38,8 +38,13 @@ read -r -d "" GUIDE_NEEDLES <<'EOF'
 ## What to ask your hosting provider@@https://www.postgresql.org/docs/current/app-pgdump.html
 ## What to ask your hosting provider@@https://mariadb.com/kb/en/mysqldump/
 ## What to ask your hosting provider@@https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/auth.rs
+## What to ask your hosting provider@@https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/config.rs
+## What to ask your hosting provider@@it is ignored with `--format=custom`
+## What to ask your hosting provider@@do not rehearse or cut over until the provider gives the version
+## What to ask your hosting provider@@Missing: nothing can be migrated
 ## If the provider gives you nothing@@https://bitwarden.com/help/export-your-data/
 ## If the provider gives you nothing@@password protected
+## If the provider gives you nothing@@delete it immediately after use
 ## If the provider gives you nothing@@.zip (with attachments)
 ## If the provider gives you nothing@@Each organisation owner exports the organisation separately
 ## If the provider gives you nothing@@does not promise that an attachments zip imports
@@ -66,12 +71,13 @@ read -r -d "" GUIDE_MESSAGE_NEEDLES <<'EOF'
 The Vaultwarden version we run
 SQLite, PostgreSQL or MySQL/MariaDB, with the database server version
 sqlite3 <database file> ".backup '<new file>'"
-pg_dump --format=custom --no-owner --no-privileges <database>
+pg_dump --format=custom --no-privileges <database>
 `mysqldump`
 every file whose name starts with `rsa_key`
 the folder `attachments/`
 the folder `sends/`
 the file `config.json`, if it exists
+`RSA_KEY_FILENAME`, `ATTACHMENTS_FOLDER` or `SENDS_FOLDER`: their values
 S3 bucket (then the bucket name and the prefix)
 the `DOMAIN` setting
 mail server (host, port, sender; not the password)
@@ -108,10 +114,12 @@ guide_section() {
 
 # guide_table_rule FILE KIND TABLE: apply one rule to each "heading@@text" line
 # of TABLE. KIND is "contains" (a fixed string anywhere in the section) or "row"
-# (a table row whose first cell is the text). The section is read again only
-# when the heading changes.
+# (a table row whose first cell is the text). The section, and for "row" its
+# first cells, are read once per heading, not once per line.
 guide_table_rule() {
-  local file="$1" kind="$2" line heading text last="" section="" ok
+  local file="$1" kind="$2" line heading text last="" section="" cells="" nl
+  nl="
+"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     heading="${line%%@@*}"
@@ -119,14 +127,17 @@ guide_table_rule() {
     if [ "$heading" != "$last" ]; then
       section="$(guide_section "$file" "$heading")"
       last="$heading"
+      if [ "$kind" = "row" ]; then
+        cells="$(printf '%s\n' "$section" | awk -F'|' '
+          /^\|/ { c = $2; gsub(/^ +| +$/, "", c); print c }
+        ')"
+      fi
     fi
     if [ "$kind" = "row" ]; then
-      ok=""
-      printf '%s\n' "$section" | awk -F'|' -v cell="$text" '
-        /^\|/ { c = $2; gsub(/^ +| +$/, "", c); if (c == cell) found = 1 }
-        END { exit !found }
-      ' && ok=1
-      [ -n "$ok" ] || problem "$file" "$heading needs a table row starting with '$text'"
+      case "$nl$cells$nl" in
+        *"$nl$text$nl"*) ;;
+        *) problem "$file" "$heading needs a table row starting with '$text'" ;;
+      esac
     else
       case "$section" in
         *"$text"*) ;;
@@ -138,9 +149,25 @@ $3
 EOF
 }
 
+# guide_message_rule FILE TABLE: each line of TABLE must be in the quoted lines
+# (">") of the ask section: what the operator sends.
+guide_message_rule() {
+  local message line
+  message="$(guide_section "$1" "$GUIDE_ASK" | grep '^>')"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$message" in
+      *"$line"*) ;;
+      *) problem "$1" "the quoted message in $GUIDE_ASK must contain: $line" ;;
+    esac
+  done <<EOF
+$2
+EOF
+}
+
 # check_guide FILE: report each rule the guide breaks.
 check_guide() {
-  local file="$1" heading present="" found="" nl line target message
+  local file="$1" heading present="" found="" nl line target
   nl="
 "
   if [ ! -f "$file" ]; then
@@ -175,17 +202,7 @@ EOF
 
   guide_table_rule "$file" contains "$GUIDE_NEEDLES"
   guide_table_rule "$file" row "$GUIDE_ROWS"
-
-  # What the operator sends is the quoted part of the ask section.
-  message="$(guide_section "$file" "$GUIDE_ASK" | grep '^>')"
-  while IFS= read -r line; do
-    case "$message" in
-      *"$line"*) ;;
-      *) problem "$file" "the quoted message in $GUIDE_ASK must contain: $line" ;;
-    esac
-  done <<EOF
-$GUIDE_MESSAGE_NEEDLES
-EOF
+  guide_message_rule "$file" "$GUIDE_MESSAGE_NEEDLES"
 
   # Relative links must name a file that exists, relative to the guide.
   while IFS= read -r line; do
@@ -207,21 +224,86 @@ expect_problem "file is missing" check_guide tests/fixtures/migration-guide/miss
 expect_problem "headings out of order" check_guide tests/fixtures/migration-guide/wrong-order.md
 expect_problem "relative link does not resolve" check_guide tests/fixtures/migration-guide/dangling-link.md
 
+# The mutants are the real guide edited, in a scratch tree that holds links to
+# the repository's files and its own docs/. A relative link of the real guide
+# then resolves in an unmodified copy, so only the edit can make a rule report.
+MUT_ROOT=""
+MUT_GUIDE=""
+make_mutant_tree() {
+  local entry
+  MUT_ROOT="$(mktemp -d)"
+  for entry in ./*; do
+    if [ -e "$entry" ] && [ "$entry" != ./docs ]; then
+      ln -s "$PWD/${entry#./}" "$MUT_ROOT/${entry#./}"
+    fi
+  done
+  mkdir "$MUT_ROOT/docs"
+  for entry in docs/*; do
+    if [ -e "$entry" ]; then
+      ln -s "$PWD/$entry" "$MUT_ROOT/$entry"
+    fi
+  done
+  rm -f "$MUT_ROOT/$GUIDE"
+  MUT_GUIDE="$MUT_ROOT/$GUIDE"
+}
+
 # expect_guide_mutant RULE SED_SCRIPT: the real guide, edited by SED_SCRIPT,
 # must report RULE.
 expect_guide_mutant() {
-  local copy
-  copy="$(mktemp)"
-  sed -e "$2" "$GUIDE" > "$copy"
-  expect_problem "$1" check_guide "$copy"
-  rm -f "$copy"
+  sed -e "$2" "$GUIDE" > "$MUT_GUIDE"
+  expect_problem "$1" check_guide "$MUT_GUIDE"
+}
+
+# guide_entry KIND LINE FILE: one entry of a table, alone (KIND: contains, row
+# or message), so that a mutant per entry runs one rule, not the whole guide.
+guide_entry() {
+  case "$1" in
+    message) guide_message_rule "$3" "$2" ;;
+    *) guide_table_rule "$3" "$1" "$2" ;;
+  esac
+}
+
+# guide_mutant_each KIND TABLE SCOPE: every entry of TABLE is enforced: the real
+# guide with that text replaced (SCOPE "quoted": on the quoted lines only;
+# "row": on the table lines only; "": everywhere) must report the entry. The
+# wiring of each table into check_guide is proven by the named mutants above it.
+guide_mutant_each() {
+  local kind="$1" table="$2" scope="$3" line text
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    text="${line#*@@}"
+    awk -v n="$text" -v scope="$scope" '
+      scope == "" || (scope == "quoted" && /^>/) || (scope == "row" && /^\|/) {
+        out = ""
+        while ((i = index($0, n)) > 0) {
+          out = out substr($0, 1, i - 1) "@@GONE@@"
+          $0 = substr($0, i + length(n))
+        }
+        $0 = out $0
+      }
+      { print }
+    ' "$GUIDE" > "$MUT_GUIDE"
+    if [ "$kind" = "row" ]; then
+      expect_problem "needs a table row starting with '$text'" guide_entry "$kind" "$line" "$MUT_GUIDE"
+    else
+      expect_problem "must contain: $text" guide_entry "$kind" "$line" "$MUT_GUIDE"
+    fi
+  done <<EOF
+$table
+EOF
 }
 
 if [ -f "$GUIDE" ]; then
+  make_mutant_tree
+  # The tree itself: an unmodified copy reports nothing. Without this, every
+  # mutant below could pass on a broken link of the copy, whatever its edit.
+  cp "$GUIDE" "$MUT_GUIDE"
+  expect_no_problem check_guide "$MUT_GUIDE"
+
   expect_guide_mutant "first line must be" '\%^# Migrate an existing instance to Scalingo$%d'
   expect_guide_mutant "missing heading: ## If the provider gives you nothing" '\%^## If the provider gives you nothing$%d'
   expect_guide_mutant "missing heading: ## Check the versions" '\%^## Check the versions$%d'
-  expect_guide_mutant "## Before you start must contain: not robustly tested" '\%not robustly tested%d'
+  expect_guide_mutant "## Before you start must contain: has not been robustly tested" 's/has not been robustly tested/is not robustly tested/'
   expect_guide_mutant "must contain: The database copy and \`rsa_key.pem\` are secrets" '\%The database copy and .rsa_key.pem. are secrets%d'
   expect_guide_mutant "must contain: Send nothing by email unencrypted" '\%Send nothing by email unencrypted%d'
   expect_guide_mutant "must contain: Delete these copies after the cutover." '\%Delete these copies after the cutover%d'
@@ -240,40 +322,17 @@ if [ -f "$GUIDE" ]; then
   expect_guide_mutant "must contain: the admin token" 's/, the admin token//'
   expect_guide_mutant "needs a table row starting with 'sends/'" '\%^| sends/ |%d'
   expect_guide_mutant "needs a table row starting with 'Same DOMAIN'" '\%^| Same DOMAIN |%d'
+  # The rule on a missing version is STOP, not "the rehearsal is the only check".
+  expect_guide_mutant "must contain: do not rehearse or cut over until the provider gives the version" 's/do not rehearse or cut over/the rehearsal is then the only check/'
+  # The mutants above live in a tree where ../README.md exists: this one breaks it.
   expect_guide_mutant "relative link does not resolve" 's%(\.\./README\.md#upgrade)%(../NO-SUCH-FILE.md#upgrade)%'
 
-  # Every entry of the three tables is enforced: the real guide with that text
-  # replaced (the message: on its quoted lines only; a row: on the table lines)
-  # must report it.
-  guide_mutant_each() {
-    local table="$1" scope="$2" line text copy
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      text="${line#*@@}"
-      copy="$(mktemp)"
-      awk -v n="$text" -v scope="$scope" '
-        scope == "" || (scope == "quoted" && /^>/) || (scope == "row" && /^\|/) {
-          out = ""
-          while ((i = index($0, n)) > 0) {
-            out = out substr($0, 1, i - 1) "@@GONE@@"
-            $0 = substr($0, i + length(n))
-          }
-          $0 = out $0
-        }
-        { print }
-      ' "$GUIDE" > "$copy"
-      if [ "$scope" = "row" ]; then
-        expect_problem "needs a table row starting with '$text'" check_guide "$copy"
-      else
-        expect_problem "must contain: $text" check_guide "$copy"
-      fi
-      rm -f "$copy"
-    done <<EOF
-$table
-EOF
-  }
-  guide_mutant_each "$GUIDE_NEEDLES" ""
-  guide_mutant_each "$GUIDE_MESSAGE_NEEDLES" "quoted"
-  guide_mutant_each "$GUIDE_ROWS" "row"
+  guide_mutant_each contains "$GUIDE_NEEDLES" ""
+  guide_mutant_each message "$GUIDE_MESSAGE_NEEDLES" "quoted"
+  guide_mutant_each row "$GUIDE_ROWS" "row"
+
+  if [ -n "$MUT_ROOT" ]; then
+    rm -rf "$MUT_ROOT"
+  fi
 fi
 check_guide "$GUIDE"
