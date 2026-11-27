@@ -182,9 +182,11 @@ start_eq "ROCKET_PORT must default to 8000 without PORT" "$(start_get ROCKET_POR
 start_clean
 start_ok "no manifest" "absent manifest" "VAULTWARDEN_HOME=$START_HOME-no-manifest"
 start_eq "an absent manifest must give version unknown" "$START_OUT" "-----> Starting Vaultwarden unknown (attachments, Sends and keys stored in s3://my-bucket)"
+start_eq "an absent manifest must not write on stderr" "$START_ERR" ""
 start_clean
 start_ok "no version" "manifest without VAULTWARDEN_VERSION" "VAULTWARDEN_HOME=$START_HOME-no-version"
 start_eq "a manifest without the version must give version unknown" "$START_OUT" "-----> Starting Vaultwarden unknown (attachments, Sends and keys stored in s3://my-bucket)"
+start_eq "a manifest without the version must not write on stderr" "$START_ERR" ""
 start_clean
 
 # --- the secret rule rejects a script that prints a secret (stdout, stderr)
