@@ -186,6 +186,7 @@ if [ -f README.md ]; then
   expect_mutant_problem "Upgrade must give the scale-to-0 command of the rollback" 'scale --synchronous web:0$'
   expect_mutant_problem "Upgrade must give the scale-back command of the rollback" 'scale --synchronous web:<n>$'
   expect_mutant_problem "Upgrade must give the migration count query" 'SELECT count'
+  expect_mutant_problem "Upgrade must give the restore step" '\[Restore the database backup\]'
   expect_mutant_problem "deploy button must link to" 'cdn.scalingo.com/deploy/button.svg'
   redeploy="$(mktemp)"
   sed '/backups-create/a\
@@ -194,6 +195,14 @@ scalingo --app <app> deploy https://example.org/archive/<previous-commit>.tar.gz
   expect_problem "must not redeploy a previous commit" check_readme "$redeploy"
   rm -f "$redeploy"
   # Order: the scale-to-0 command moved after the restore, the scale-back before it.
+  # Order: the container listing moved after the scale-to-0 command.
+  late_list="$(mktemp)"
+  sed '/^ *scalingo --app <app> scale$/d
+/scale --synchronous web:0$/a\
+scalingo --app <app> scale
+' README.md > "$late_list"
+  expect_problem "must list the containers before scaling to 0" check_readme "$late_list"
+  rm -f "$late_list"
   late_down="$(mktemp)"
   sed '/scale --synchronous web:0$/d
 /\[Restore the database backup\]/a\
