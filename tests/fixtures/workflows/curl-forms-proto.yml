@@ -20,3 +20,4 @@ jobs:
           FOO=bar curl --proto '=https' --fail --silent https://example.org/a
           sudo -u root curl --proto '=https' --fail --silent https://example.org/a
           echo https://example.org/a | xargs -I {} curl --proto '=https' --fail --silent {}
+          if command -v curl > /dev/null 2>&1; then echo "curl is installed"; fi
