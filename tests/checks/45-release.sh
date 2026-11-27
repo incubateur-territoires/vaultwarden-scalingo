@@ -11,11 +11,14 @@
 #    script's ASSET_NAME.
 check_release() {
   local workflow="$1" script="$2" paths wanted want asset script_asset literal
-  paths="$(ruby -ryaml -e '
+  if ! paths="$(ruby -ryaml -e '
     doc = YAML.safe_load(File.read(ARGV[0]), aliases: true)
     on = doc["on"] || doc[true] || {}
     puts Array((on["pull_request"] || {})["paths"])
-  ' "$workflow" 2> /dev/null)"
+  ' "$workflow" 2> /dev/null)"; then
+    problem "$workflow" "invalid YAML: the pull_request paths filter cannot be read"
+    return
+  fi
   wanted="$(
     echo VERSIONS
     echo .github/workflows/release.yml
@@ -56,6 +59,21 @@ expect_problem "paths filter must list .github/workflows/release.yml" release_fi
 expect_problem "must be the ASSET_NAME of the packaging script" release_fixture script-asset-differs
 expect_problem "dist/other-name.tar.gz must be dist/asset.tar.gz" release_fixture upload-path-differs
 expect_problem "env ASSET is missing" release_fixture no-asset-env
+expect_problem "invalid YAML" release_fixture broken-yaml
+
+# A workflow that does not parse is one problem naming the file, not a
+# "paths filter must list ..." line for every path.
+broken_yaml_is_one_problem() {
+  local log lines
+  log="$(mktemp)"
+  CHECK_LOG="$log" release_fixture broken-yaml > /dev/null 2>&1
+  lines="$(wc -l < "$log" | tr -d ' ')"
+  if [ "$lines" != 1 ] || ! grep -qF "tests/fixtures/release/broken-yaml/release.yml: invalid YAML" "$log"; then
+    problem tests/fixtures/release/broken-yaml "a workflow that does not parse must be reported once, as invalid YAML"
+  fi
+  rm -f "$log"
+}
+broken_yaml_is_one_problem
 
 if [ -f .github/workflows/release.yml ]; then
   check_release .github/workflows/release.yml scripts/package-release.sh

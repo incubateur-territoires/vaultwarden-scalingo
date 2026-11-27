@@ -60,7 +60,7 @@ jobs:
           VERSION: ${{ steps.versions.outputs.vaultwarden_version }}
           SHA256: ${{ steps.versions.outputs.source_sha256 }}
         run: |
-          curl --fail --silent --show-error --location --retry 3 \
+          curl --proto '=https' --fail --silent --show-error --location --retry 3 \
             --output "$RUNNER_TEMP/vaultwarden-src.tar.gz" \
             "https://github.com/dani-garcia/vaultwarden/archive/refs/tags/${VERSION}.tar.gz"
           echo "$SHA256  $RUNNER_TEMP/vaultwarden-src.tar.gz" | sha256sum --check -
@@ -90,7 +90,7 @@ jobs:
           VERSION: ${{ steps.versions.outputs.web_vault_version }}
           SHA256: ${{ steps.versions.outputs.web_vault_sha256 }}
         run: |
-          curl --fail --silent --show-error --location --retry 3 \
+          curl --proto '=https' --fail --silent --show-error --location --retry 3 \
             --output "$RUNNER_TEMP/web-vault.tar.gz" \
             "https://github.com/dani-garcia/bw_web_builds/releases/download/${VERSION}/bw_web_${VERSION}.tar.gz"
           echo "$SHA256  $RUNNER_TEMP/web-vault.tar.gz" | sha256sum --check -
