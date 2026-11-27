@@ -1,0 +1,10 @@
+# Fixture: a workflow that starts nothing.
+name: Release
+on:
+  release:
+    types: [published]
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi
