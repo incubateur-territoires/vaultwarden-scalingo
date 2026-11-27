@@ -16,7 +16,14 @@ GUIDE_HEADINGS="# Migrate an existing instance to Scalingo
 ## Before you start
 ## What to ask your hosting provider
 ## If the provider gives you nothing
-## Check the versions"
+## Check the versions
+## Rehearse first
+## Load the database
+### PostgreSQL source
+### SQLite source
+### MySQL or MariaDB source
+## Copy the files to the bucket
+## Set the settings"
 
 # "heading@@text": the section must contain the text, as a fixed string.
 read -r -d "" GUIDE_NEEDLES <<'EOF'
@@ -63,6 +70,93 @@ read -r -d "" GUIDE_NEEDLES <<'EOF'
 ## Check the versions@@Version unknown, or newer than the target: stop.
 ## Check the versions@@The rule is derived from that: upstream does not state it.
 ## Check the versions@@that is our inference, not stated upstream
+## Rehearse first@@### Rehearsal checks
+## Rehearse first@@Do it on a copy of the data, and never with the real `DOMAIN`
+## Rehearse first@@(../README.md#one-click-deployment)
+## Rehearse first@@a `DOMAIN` of its own
+## Rehearse first@@a bucket of its own
+## Rehearse first@@`SIGNUPS_ALLOWED=false`
+## Rehearse first@@Starting Vaultwarden <version>
+## Rehearse first@@are being overridden by the config.json file.
+## Rehearse first@@Skip this one in the rehearsal and do it at the cutover.
+## Rehearse first@@with the rollback as the safety net
+## Load the database@@scale --synchronous web:0
+## Load the database@@scale --synchronous web:<n>
+## Load the database@@backups-create
+## Load the database@@db-tunnel SCALINGO_POSTGRESQL_URL
+## Load the database@@pgsql-console
+## Load the database@@SELECT count(*) FROM users;
+## Load the database@@count(*) FROM ciphers
+## Load the database@@count(*) FROM organizations
+## Load the database@@count(*) FROM attachments
+## Load the database@@count(*) FROM sends
+## Load the database@@If a number differs, stop: do not go on, do not cut over.
+## Load the database@@pg_restore --clean --if-exists --no-owner --no-privileges --no-comments
+## Load the database@@backups-download --backup <backup-id>
+## Load the database@@tar -xvzf <archive>
+## Load the database@@The CLI has no command that restores a backup
+## Load the database@@https://doc.scalingo.com/databases/postgresql/shared-resources/guides/restoring
+## Load the database@@this guide has no way to guess it
+## Load the database@@Whether pgloader works through the tunnel
+### PostgreSQL source@@addons-remove <addon-id>
+### PostgreSQL source@@addons-add postgresql <plan>
+### PostgreSQL source@@select version();
+### PostgreSQL source@@pg_restore --clean --if-exists --no-owner --no-privileges --no-comments
+### PostgreSQL source@@Error running migrations
+### PostgreSQL source@@If the source is newer, stop
+### PostgreSQL source@@always loaded into a fresh add-on
+### PostgreSQL source@@Check:
+### PostgreSQL source@@If it fails:
+### SQLite source@@Upstream documents this conversion and calls it unsupported and not robustly tested. Back up first, and rehearse.
+### SQLite source@@https://github.com/dani-garcia/vaultwarden/wiki/Using-the-PostgreSQL-Backend
+### SQLite source@@https://github.com/dani-garcia/vaultwarden/wiki/Running-without-WAL-enabled
+### SQLite source@@.backup
+### SQLite source@@db.sqlite3-wal
+### SQLite source@@PRAGMA journal_mode=delete;
+### SQLite source@@SELECT count(*) FROM __diesel_schema_migrations;
+### SQLite source@@check the wiki for a newer version of this file
+### SQLite source@@WITH data only, include no drop, reset sequences
+### SQLite source@@ALTER SCHEMA 'bitwarden' RENAME TO 'public'
+### SQLite source@@pgloader bitwarden.load
+### SQLite source@@Check:
+### SQLite source@@If it fails:
+### MySQL or MariaDB source@@Upstream documents this conversion and calls it unsupported and not robustly tested. Back up first, and rehearse.
+### MySQL or MariaDB source@@https://github.com/dani-garcia/vaultwarden/wiki/Using-the-PostgreSQL-Backend
+### MySQL or MariaDB source@@docker run --name vaultwarden-source-copy
+### MySQL or MariaDB source@@docker exec -i vaultwarden-source-copy
+### MySQL or MariaDB source@@the latest 3.x of
+### MySQL or MariaDB source@@check the wiki for a newer version of this file
+### MySQL or MariaDB source@@ALTER SCHEMA 'vaultwarden' RENAME TO 'public'
+### MySQL or MariaDB source@@pgloader vaultwarden.load
+### MySQL or MariaDB source@@First check that pgloader is the latest 3.x.
+### MySQL or MariaDB source@@Check:
+### MySQL or MariaDB source@@If it fails:
+## Copy the files to the bucket@@The prefix must be exactly `vaultwarden/`
+## Copy the files to the bucket@@vaultwarden/attachments/
+## Copy the files to the bucket@@vaultwarden/sends/
+## Copy the files to the bucket@@Do not copy `icon_cache/`
+## Copy the files to the bucket@@Read `config.json` first.
+## Copy the files to the bucket@@aws s3 cp rsa_key.pem
+## Copy the files to the bucket@@aws s3 cp config.json
+## Copy the files to the bucket@@aws s3 sync attachments
+## Copy the files to the bucket@@aws s3 sync sends
+## Copy the files to the bucket@@--endpoint-url
+## Copy the files to the bucket@@aws configure set default.s3.addressing_style path
+## Copy the files to the bucket@@AWS_REGION=<S3_REGION>
+## Copy the files to the bucket@@aws s3 ls s3://<S3_BUCKET>/vaultwarden/ --recursive
+## Copy the files to the bucket@@scalingo --app <app> restart
+## Copy the files to the bucket@@Wrong prefix
+## Copy the files to the bucket@@Private key '<path>' created correctly
+## Copy the files to the bucket@@Upload the right file and restart.
+## Copy the files to the bucket@@Check:
+## Copy the files to the bucket@@If it fails:
+## Set the settings@@scalingo --app <app> env-set
+## Set the settings@@`DOMAIN`: the same as the source's
+## Set the settings@@`SIGNUPS_ALLOWED`: it stays `false`
+## Set the settings@@`SMTP_HOST`, `SMTP_FROM`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`
+## Set the settings@@`PUSH_ENABLED`, `PUSH_INSTALLATION_ID`, `PUSH_INSTALLATION_KEY`
+## Set the settings@@`YUBICO_CLIENT_ID`, `YUBICO_SECRET_KEY`
+## Set the settings@@`DUO_IKEY`, `DUO_SKEY`, `DUO_HOST`
 EOF
 
 # Only the quoted lines (">") of the ask section: what the operator sends. One
@@ -167,7 +261,7 @@ EOF
 
 # check_guide FILE: report each rule the guide breaks.
 check_guide() {
-  local file="$1" heading present="" found="" nl line target
+  local file="$1" heading present="" found="" nl line target numbers
   nl="
 "
   if [ ! -f "$file" ]; then
@@ -203,6 +297,18 @@ EOF
   guide_table_rule "$file" contains "$GUIDE_NEEDLES"
   guide_table_rule "$file" row "$GUIDE_ROWS"
   guide_message_rule "$file" "$GUIDE_MESSAGE_NEEDLES"
+
+  # The rehearsal checklist: seven items, numbered 1 to 7.
+  numbers="$(guide_section "$file" "### Rehearsal checks" | sed -n 's/^\([0-9][0-9]*\)\. .*/\1/p' | tr '\n' ' ')"
+  if [ "$numbers" != "1 2 3 4 5 6 7 " ]; then
+    problem "$file" "### Rehearsal checks must have 7 numbered items, from 1 to 7"
+  fi
+
+  # Scalingo's CLI has no command that restores a backup: the guide must not
+  # name one, it gives the download and pg_restore steps instead.
+  if grep -qF 'backups-restore' "$file"; then
+    problem "$file" "must not mention backups-restore: Scalingo's CLI has no such command"
+  fi
 
   # Relative links must name a file that exists, relative to the guide.
   while IFS= read -r line; do
@@ -326,6 +432,30 @@ if [ -f "$GUIDE" ]; then
   expect_guide_mutant "must contain: do not rehearse or cut over until the provider gives the version" 's/do not rehearse or cut over/the rehearsal is then the only check/'
   # The mutants above live in a tree where ../README.md exists: this one breaks it.
   expect_guide_mutant "relative link does not resolve" 's%(\.\./README\.md#upgrade)%(../NO-SUCH-FILE.md#upgrade)%'
+
+  # The sections of the rehearsal, the load, the files and the settings: one
+  # named mutant each, so a table entry stays tied to its own section.
+  expect_guide_mutant "missing heading: ## Rehearse first" '\%^## Rehearse first$%d'
+  expect_guide_mutant "missing heading: ### SQLite source" '\%^### SQLite source$%d'
+  expect_guide_mutant "missing heading: ## Set the settings" '\%^## Set the settings$%d'
+  expect_guide_mutant "## Rehearse first must contain: Skip this one in the rehearsal" 's/Skip this one in the rehearsal/Do this one in the rehearsal/'
+  expect_guide_mutant "### SQLite source must contain: PRAGMA journal_mode=delete;" 's/PRAGMA journal_mode=delete;/PRAGMA mode;/'
+  expect_guide_mutant "## Copy the files to the bucket must contain: aws s3 sync sends" 's/aws s3 sync sends/aws s3 cp sends/'
+  expect_guide_mutant "## Set the settings must contain: \`DUO_IKEY\`, \`DUO_SKEY\`, \`DUO_HOST\`" 's/.DUO_SKEY., //'
+  # The checklist has seven numbered items: a deleted one is reported.
+  expect_guide_mutant "### Rehearsal checks must have 7 numbered items" '\%^4\. Log in as a user who has two-factor%d'
+  expect_guide_mutant "### Rehearsal checks must have 7 numbered items" '\%^### Rehearsal checks$%d'
+  # Each source ends with Check: and If it fails:, one line each: deleting them
+  # in one source only reports that source, not the others.
+  expect_guide_mutant "### SQLite source must contain: Check:" '\%^### SQLite source$%,\%^### MySQL or MariaDB source$%{\%^Check:%d;}'
+  expect_guide_mutant "### MySQL or MariaDB source must contain: If it fails:" '\%^### MySQL or MariaDB source$%,\%^## Copy the files%{\%^If it fails:%d;}'
+  expect_guide_mutant "### PostgreSQL source must contain: Check:" '\%^### PostgreSQL source$%,\%^### SQLite source$%{\%^Check:%d;}'
+  expect_guide_mutant "## Copy the files to the bucket must contain: If it fails:" '\%^If it fails:$%d'
+  # The upstream warning, deleted in the SQLite source only.
+  expect_guide_mutant "### SQLite source must contain: Upstream documents this conversion" '\%^### SQLite source$%,\%^### MySQL or MariaDB source$%{s/^Upstream documents this conversion.*$/Upstream says nothing./;}'
+  # G1: Scalingo's CLI has no backups-restore, and the guide must not name it.
+  expect_guide_mutant "must not mention backups-restore" 's/The CLI has no command that restores a backup/Run backups-restore/'
+  expect_guide_mutant "must not mention backups-restore" 's/see "Restore the backup" above/run backups-restore/'
 
   guide_mutant_each contains "$GUIDE_NEEDLES" ""
   guide_mutant_each message "$GUIDE_MESSAGE_NEEDLES" "quoted"
