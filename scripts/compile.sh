@@ -22,16 +22,10 @@ fail() {
   exit 1
 }
 
-sha256_of() {
-  if command -v sha256sum > /dev/null 2>&1; then
-    sha256sum "$1" | cut -d ' ' -f 1
-  else
-    shasum -a 256 "$1" | cut -d ' ' -f 1
-  fi
-}
-
 # shellcheck source=scripts/lib/kv.sh
 . "$(dirname "$0")/lib/kv.sh"
+# shellcheck source=scripts/lib/sha256.sh
+. "$(dirname "$0")/lib/sha256.sh"
 
 versions="$BUILD_DIR/VERSIONS"
 repository="$(read_kv "$versions" RELEASE_REPOSITORY)" || fail "Cannot read RELEASE_REPOSITORY from VERSIONS."
@@ -49,12 +43,14 @@ url="${VAULTWARDEN_RELEASE_URL:-https://github.com/$repository/releases/download
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$CACHE_DIR"
-cached="$CACHE_DIR/$pin.tar.gz"
+# CACHE_DIR may be shared with other buildpacks: keep ours in a subdirectory.
+cache="$CACHE_DIR/vaultwarden"
+mkdir -p "$cache"
+cached="$cache/$pin.tar.gz"
 asset="$work/$ASSET_NAME"
 
 # One asset per pin in the cache: drop what an earlier pin left.
-find "$CACHE_DIR" -maxdepth 1 -type f -name '*.tar.gz' ! -name "$pin.tar.gz" -delete
+find "$cache" -maxdepth 1 -type f -name '*.tar.gz' ! -name "$pin.tar.gz" -delete
 
 if [ -f "$cached" ] && [ "$(sha256_of "$cached")" = "$pin" ]; then
   echo "-----> Using the cached release asset"
@@ -68,7 +64,7 @@ else
       ;;
     *)
       curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location --retry 3 \
-        --output "$asset" "$url" ||
+        --connect-timeout 30 --max-time 300 --output "$asset" "$url" ||
         fail "Could not download $url. Check that release $tag exists and has its assets."
       ;;
   esac
@@ -81,9 +77,16 @@ fi
 cp "$asset" "$cached"
 
 rm -rf "${BUILD_DIR:?}/vaultwarden"
-tar -xzf "$asset" -C "$BUILD_DIR"
+tar -xzf "$asset" -C "$BUILD_DIR" ||
+  fail "Could not extract $ASSET_NAME into the build directory. Check that the build has disk space left, then deploy again."
 
-if ! "$BUILD_DIR/vaultwarden/vaultwarden" --version > /dev/null 2>&1; then
+# Keep what the binary says: a missing library, or a stack it cannot run on,
+# shows there and nowhere else.
+status=0
+said="$("$BUILD_DIR/vaultwarden/vaultwarden" --version 2>&1)" || status=$?
+if [ "$status" -ne 0 ]; then
+  echo "       vaultwarden --version exited with status $status:" >&2
+  printf '%s\n' "$said" | sed 's/^/       /' >&2
   fail "The Vaultwarden binary does not run on stack ${STACK:-unknown}. Supported stacks: scalingo-24, scalingo-26."
 fi
 

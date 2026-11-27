@@ -2,4 +2,7 @@
 # Buildpack contract: bin/compile BUILD_DIR CACHE_DIR ENV_DIR. The logic lives
 # in the deployed commit, so it is the app's own scripts/compile.sh that runs,
 # whichever repository the .buildpacks line points at.
+# This file is the part every deployed app runs from this repository's main,
+# whatever commit the app is on: keep it backward compatible. It must keep
+# running the scripts/compile.sh of older commits with the same three arguments.
 exec "$1/scripts/compile.sh" "$@"

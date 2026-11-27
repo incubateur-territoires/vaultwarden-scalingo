@@ -2,6 +2,9 @@
 # Helpers shared by the check modules. Sourced, never executed.
 # Needs CHECK_LOG: a file that gets one line per problem.
 
+# shellcheck source=scripts/lib/sha256.sh
+. scripts/lib/sha256.sh
+
 # problem FILE RULE: print "check: FILE: RULE" and count it. One problem is one
 # line: the lines of a multi-line RULE (a tool's report) are joined with " | ".
 problem() {
@@ -108,13 +111,4 @@ expect_no_problem() {
     problem "$fixture" "expected no problem, got: ${reported#check: }"
   fi
   rm -f "$inner_log"
-}
-
-# sha256_of FILE: print the hex sha256 of FILE.
-sha256_of() {
-  if command -v sha256sum > /dev/null 2>&1; then
-    sha256sum "$1" | cut -d ' ' -f 1
-  else
-    shasum -a 256 "$1" | cut -d ' ' -f 1
-  fi
 }

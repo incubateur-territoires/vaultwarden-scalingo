@@ -11,6 +11,7 @@ on:
       - scripts/package-release.sh
       - scripts/set-version.sh
       - scripts/lib/kv.sh
+      - scripts/lib/sha256.sh
   workflow_dispatch:
   release:
     types: [published]

@@ -127,7 +127,7 @@ Set these as environment variables of the app. None is in the deploy form.
 
 ## Troubleshooting
 
-Messages starting with ` !     ` come from this repository's scripts: the last four rows appear in the build log, the two before them in the application logs. S3 problems are only visible in the application logs (`scalingo logs`), at start or at the first file write.
+Messages starting with ` !     ` come from this repository's scripts: the last five rows appear in the build log, the two before them in the application logs. S3 problems are only visible in the application logs (`scalingo logs`), at start or at the first file write.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
@@ -139,7 +139,8 @@ Messages starting with ` !     ` come from this repository's scripts: the last f
 | VERSIONS pins no release yet (RELEASE_TAG is empty). | No release of this repository is pinned in `VERSIONS` | The maintainer publishes a release and merges the pin pull request. |
 | Could not download `<url>`. Check that release `<tag>` exists and has its assets. | The pinned release or its assets do not exist | Check the release named in `VERSIONS` exists and has its assets. |
 | Checksum mismatch for `<asset>`: expected `<pin>`, got `<actual>`. Refusing to install. | The downloaded file is not the one that was pinned, so it is not installed | Do not work around it: check the release assets, or ask the maintainer. |
-| The Vaultwarden binary does not run on stack `<stack>`. Supported stacks: scalingo-24, scalingo-26. | The app is on an unsupported stack, or the pinned release holds a binary that fails on a supported one | If the stack is not `scalingo-24` or `scalingo-26`, move the app to one of them ([Scalingo stacks](https://doc.scalingo.com/platform/internals/stacks/overview)). If it is, the release is faulty: do not work around it, ask the maintainer. |
+| Could not extract `<asset>` into the build directory. Check that the build has disk space left, then deploy again. | The downloaded release was verified, but unpacking it failed, most often because the build ran out of disk space | Deploy again. If it fails the same way, ask the maintainer: the build log shows what `tar` reported just above. |
+| The Vaultwarden binary does not run on stack `<stack>`. Supported stacks: scalingo-24, scalingo-26. | The app is on an unsupported stack, or the pinned release holds a binary that fails on a supported one | If the stack is not `scalingo-24` or `scalingo-26`, move the app to one of them ([Scalingo stacks](https://doc.scalingo.com/platform/internals/stacks/overview)). If it is, the release is faulty: do not work around it, ask the maintainer, and send them the lines the build log prints just above this message (what the binary said). |
 
 ## Security
 
