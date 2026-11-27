@@ -7,10 +7,10 @@
 # line of SHA256SUMS (the file package-release.sh wrote and the release
 # carries), through set-version.sh, and prints that checksum. Refuses (exit 1,
 # FILE untouched) a TAG that is not a plain tag name, a SHA256SUMS that does not
-# start with a sha256, a REPOSITORY (the repository the workflow runs in) other
-# than the RELEASE_REPOSITORY of FILE, and a FILE that already pins this TAG
-# with this checksum. It does not check the asset against SHA256SUMS: the
-# workflow does, with sha256sum, before it calls this.
+# start with a sha256 or holds more than one line, a REPOSITORY (the repository
+# the workflow runs in) other than the RELEASE_REPOSITORY of FILE, and a FILE
+# that already pins this TAG with this checksum. It does not check the asset
+# against SHA256SUMS: the workflow does, with sha256sum, before it calls this.
 set -euo pipefail
 
 fail() {
@@ -30,10 +30,16 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 [[ $tag =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "The tag '$tag' is not a plain tag name: pin it by hand."
 
-[ -f "$sums" ] && [ -r "$sums" ] || fail "cannot read $sums"
-sha256=""
-read -r sha256 _ < "$sums" || [ -n "$sha256" ] || true
+if [ ! -f "$sums" ] || [ ! -r "$sums" ]; then
+  fail "cannot read $sums"
+fi
+# The first field of the first line, as `cut -d ' ' -f 1` gave it: a leading
+# space leaves it empty.
+line=""
+IFS= read -r line < "$sums" || true
+sha256="${line%% *}"
 [[ $sha256 =~ ^[0-9a-f]{64}$ ]] || fail "$sums does not start with a sha256."
+[ "$(grep -c '' "$sums")" -eq 1 ] || fail "$sums must hold exactly one line (the checksum of the one asset)."
 
 # read_kv explains an unreadable file and a duplicated key itself.
 pinned_repository="$(read_kv "$file" RELEASE_REPOSITORY)" || fail "Cannot read RELEASE_REPOSITORY from $file."

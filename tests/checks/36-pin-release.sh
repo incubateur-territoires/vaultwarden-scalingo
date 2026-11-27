@@ -43,6 +43,13 @@ pin_release_check() {
   refuses "$script" "not a plain tag name" "$file" '' "$sums" "$repo"
   refuses "$script" "cannot read" "$file" v1.2.3 "$work/absent" "$repo"
   refuses "$script" "does not start with a sha256" "$file" v1.2.3 tests/fixtures/versions/ok-unpinned.env "$repo"
+  # Exactly one line, as the old cut refused: a second line, a leading space.
+  printf '%s  a.tar.gz\n%s  b.tar.gz\n' "$sha" "$newer" > "$work/two-lines"
+  printf ' %s  a.tar.gz\n' "$sha" > "$work/leading-space"
+  : > "$work/empty"
+  refuses "$script" "must hold exactly one line" "$file" v1.2.3 "$work/two-lines" "$repo"
+  refuses "$script" "does not start with a sha256" "$file" v1.2.3 "$work/leading-space" "$repo"
+  refuses "$script" "does not start with a sha256" "$file" v1.2.3 "$work/empty" "$repo"
   # The fork case: the workflow runs in a repository VERSIONS does not name.
   refuses "$script" "RELEASE_REPOSITORY is $repo but this workflow runs in someone/fork" "$file" v1.2.3 "$sums" someone/fork
   refuses "$script" "RELEASE_REPOSITORY" "$file" v1.2.3 "$sums" ""
