@@ -1,0 +1,19 @@
+name: curl fixture
+on: [push]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      # curl is only named here, in a comment
+      - name: curl the thing (a name, not a command)
+        run: |
+          echo "curl is mentioned in a string"
+          if ! curl --proto '=https' --fail --silent https://example.org/a; then exit 1; fi
+          if curl --proto '=https' --fail --silent https://example.org/a; then echo ok; fi
+          if true
+          then curl --proto '=https' --fail --silent https://example.org/a
+          fi
+          sudo curl --proto '=https' --fail --silent https://example.org/a
+          echo https://example.org/a | xargs -n1 curl --proto '=https' --fail --silent

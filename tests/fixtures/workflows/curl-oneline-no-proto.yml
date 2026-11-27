@@ -1,0 +1,9 @@
+name: curl fixture
+on: [push]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: curl --fail --silent https://example.org/a

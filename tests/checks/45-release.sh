@@ -12,11 +12,21 @@
 check_release() {
   local workflow="$1" script="$2" paths wanted want asset script_asset literal
   if ! paths="$(ruby -ryaml -e '
-    doc = YAML.safe_load(File.read(ARGV[0]), aliases: true)
-    on = doc["on"] || doc[true] || {}
-    puts Array((on["pull_request"] || {})["paths"])
+    begin
+      doc = YAML.safe_load(File.read(ARGV[0]), aliases: true)
+    rescue StandardError, Psych::SyntaxError => e
+      puts "invalid YAML: #{e.message.lines.first.to_s.strip}"
+      exit 1
+    end
+    on = doc.is_a?(Hash) ? (doc["on"] || doc[true] || {}) : nil
+    pr = on.is_a?(Hash) ? (on["pull_request"] || {}) : nil
+    unless pr.is_a?(Hash)
+      puts "unexpected shape: on must be a mapping with a pull_request paths filter"
+      exit 1
+    end
+    puts Array(pr["paths"])
   ' "$workflow" 2> /dev/null)"; then
-    problem "$workflow" "invalid YAML: the pull_request paths filter cannot be read"
+    problem "$workflow" "$paths"
     return
   fi
   wanted="$(
@@ -60,6 +70,7 @@ expect_problem "must be the ASSET_NAME of the packaging script" release_fixture 
 expect_problem "dist/other-name.tar.gz must be dist/asset.tar.gz" release_fixture upload-path-differs
 expect_problem "env ASSET is missing" release_fixture no-asset-env
 expect_problem "invalid YAML" release_fixture broken-yaml
+expect_problem "unexpected shape" release_fixture unexpected-shape
 
 # A workflow that does not parse is one problem naming the file, not a
 # "paths filter must list ..." line for every path.
@@ -74,6 +85,24 @@ broken_yaml_is_one_problem() {
   rm -f "$log"
 }
 broken_yaml_is_one_problem
+
+# A file that parses but has another shape (on: [push, pull_request]) is not
+# "invalid YAML", and the other way round.
+yaml_and_shape_are_told_apart() {
+  local log
+  log="$(mktemp)"
+  CHECK_LOG="$log" release_fixture unexpected-shape > /dev/null 2>&1
+  if grep -qF "invalid YAML" "$log"; then
+    problem tests/fixtures/release/unexpected-shape "a parsable file of unexpected shape must not be reported as invalid YAML"
+  fi
+  : > "$log"
+  CHECK_LOG="$log" release_fixture broken-yaml > /dev/null 2>&1
+  if grep -qF "unexpected shape" "$log"; then
+    problem tests/fixtures/release/broken-yaml "a file that does not parse must not be reported as an unexpected shape"
+  fi
+  rm -f "$log"
+}
+yaml_and_shape_are_told_apart
 
 if [ -f .github/workflows/release.yml ]; then
   check_release .github/workflows/release.yml scripts/package-release.sh
