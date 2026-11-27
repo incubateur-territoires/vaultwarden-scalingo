@@ -32,9 +32,13 @@ The Vaultwarden binary does not run on stack"
 # What the Upgrade section must give: the backup, then the deploy.
 README_BACKUP_CMD="backups-create"
 README_DEPLOY_CMD="archive/refs/heads/main.tar.gz"
-# The rollback restarts the app, which keeps running the version that was live: it never
-# deploys a previous commit, which would run the migrations again on the restored database.
-README_RESTART_CMD="scalingo --app <app> restart"
+# The rollback stops the app, restores the backup, then starts the app again: the app keeps
+# running the release that was live. It never deploys a previous commit, which would run the
+# migrations again on the restored database. The operator reads the container count first.
+README_SCALE_LIST_CMD="scalingo --app <app> scale"
+README_SCALE_DOWN_CMD="scalingo --app <app> scale --synchronous web:0"
+README_SCALE_UP_CMD="scalingo --app <app> scale --synchronous web:<n>"
+README_RESTORE_LINK="[Restore the database backup]("
 README_REDEPLOY_CMD="archive/<previous-commit>"
 # How the operator learns whether a migration ran.
 README_MIGRATION_QUERY="SELECT count(*) FROM __diesel_schema_migrations;"
@@ -49,7 +53,7 @@ readme_section() {
 
 # check_readme FILE: report each rule the README breaks.
 check_readme() {
-  local file="$1" heading name symptom present="" found="" section backup_at deploy_at
+  local file="$1" heading name symptom present="" found="" section backup_at deploy_at list_at down_at restore_at up_at
   if [ ! -f "$file" ]; then
     problem "$file" "file is missing"
     return
@@ -108,12 +112,33 @@ EOF
   if [ -n "$backup_at" ] && [ -n "$deploy_at" ] && [ "$backup_at" -gt "$deploy_at" ]; then
     problem "$file" "Upgrade must give the backup command before the deploy command"
   fi
+  list_at="$(printf '%s\n' "$section" | grep -nxE -- " *$README_SCALE_LIST_CMD" | head -n 1 | cut -d : -f 1)"
+  down_at="$(printf '%s\n' "$section" | grep -nF -- "$README_SCALE_DOWN_CMD" | head -n 1 | cut -d : -f 1)"
+  restore_at="$(printf '%s\n' "$section" | grep -nF -- "$README_RESTORE_LINK" | head -n 1 | cut -d : -f 1)"
+  up_at="$(printf '%s\n' "$section" | grep -nF -- "$README_SCALE_UP_CMD" | head -n 1 | cut -d : -f 1)"
+  if [ -z "$list_at" ]; then
+    problem "$file" "Upgrade must give the command that lists the containers ($README_SCALE_LIST_CMD)"
+  fi
+  if [ -z "$down_at" ]; then
+    problem "$file" "Upgrade must give the scale-to-0 command of the rollback ($README_SCALE_DOWN_CMD)"
+  fi
+  if [ -z "$up_at" ]; then
+    problem "$file" "Upgrade must give the scale-back command of the rollback ($README_SCALE_UP_CMD)"
+  fi
+  if [ -z "$restore_at" ]; then
+    problem "$file" "Upgrade must give the restore step ($README_RESTORE_LINK)"
+  fi
+  if [ -n "$list_at" ] && [ -n "$down_at" ] && [ "$list_at" -gt "$down_at" ]; then
+    problem "$file" "Upgrade must list the containers before scaling to 0"
+  fi
+  if [ -n "$down_at" ] && [ -n "$restore_at" ] && [ "$down_at" -gt "$restore_at" ]; then
+    problem "$file" "Upgrade must scale to 0 before the restore"
+  fi
+  if [ -n "$up_at" ] && [ -n "$restore_at" ] && [ "$up_at" -lt "$restore_at" ]; then
+    problem "$file" "Upgrade must scale back after the restore"
+  fi
   case "$section" in
-    *"$README_RESTART_CMD"*) ;;
-    *) problem "$file" "Upgrade must give the restart command of the rollback ($README_RESTART_CMD)" ;;
-  esac
-  case "$section" in
-    *"$README_REDEPLOY_CMD"*) problem "$file" "Upgrade must not redeploy a previous commit: restart the app instead" ;;
+    *"$README_REDEPLOY_CMD"*) problem "$file" "Upgrade must not redeploy a previous commit: scale the app back instead" ;;
   esac
   case "$section" in
     *"$README_MIGRATION_QUERY"*) ;;
@@ -157,7 +182,9 @@ if [ -f README.md ]; then
   expect_mutant_problem "starting with 'DOMAIN'" '^| *DOMAIN'
   expect_mutant_problem "Upgrade must give the backup command" 'backups-create'
   expect_mutant_problem "Upgrade must give the deploy command" 'archive/refs/heads/main'
-  expect_mutant_problem "Upgrade must give the restart command of the rollback" '^ *scalingo --app <app> restart$'
+  expect_mutant_problem "Upgrade must give the command that lists the containers" '^ *scalingo --app <app> scale$'
+  expect_mutant_problem "Upgrade must give the scale-to-0 command of the rollback" 'scale --synchronous web:0$'
+  expect_mutant_problem "Upgrade must give the scale-back command of the rollback" 'scale --synchronous web:<n>$'
   expect_mutant_problem "Upgrade must give the migration count query" 'SELECT count'
   expect_mutant_problem "deploy button must link to" 'cdn.scalingo.com/deploy/button.svg'
   redeploy="$(mktemp)"
@@ -166,5 +193,20 @@ scalingo --app <app> deploy https://example.org/archive/<previous-commit>.tar.gz
 ' README.md > "$redeploy"
   expect_problem "must not redeploy a previous commit" check_readme "$redeploy"
   rm -f "$redeploy"
+  # Order: the scale-to-0 command moved after the restore, the scale-back before it.
+  late_down="$(mktemp)"
+  sed '/scale --synchronous web:0$/d
+/\[Restore the database backup\]/a\
+scalingo --app <app> scale --synchronous web:0
+' README.md > "$late_down"
+  expect_problem "must scale to 0 before the restore" check_readme "$late_down"
+  rm -f "$late_down"
+  early_up="$(mktemp)"
+  sed '/scale --synchronous web:<n>$/d
+/\[Restore the database backup\]/i\
+scalingo --app <app> scale --synchronous web:<n>
+' README.md > "$early_up"
+  expect_problem "must scale back after the restore" check_readme "$early_up"
+  rm -f "$early_up"
 fi
 check_readme README.md

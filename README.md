@@ -83,14 +83,24 @@ To take it, with the [Scalingo CLI](https://doc.scalingo.com/tools/cli/start) an
 If the deployment fails, Scalingo keeps the previous version running ([boot errors](https://doc.scalingo.com/platform/app/troubleshooting/boot-errors)), and the app is not down. But the new version may have started a migration before it failed, so the old version can be running against a database that has already changed. To roll back:
 
 1. Find out whether a migration ran. Vaultwarden does not say: it applies the pending migrations silently when it starts, and a failure is the only thing it reports (`Error running migrations`, in the application logs: `scalingo --app <app> logs --lines 200`). So ask the database. Run the query of the backup step again, in `pgsql-console`: if the count is higher than the number you wrote down, a migration ran.
-2. If the count is the same, no migration ran. If the failure is a build error, or one of the start messages in Troubleshooting, nothing else changed either: fix the cause (the deployment logs are `scalingo --app <app> deployment-logs`) and deploy again. For any other failure, go to step 3: the count only records migrations, and Vaultwarden also rewrites some data when it starts (two-factor entries, for example), which the count does not show.
-3. If the count is higher, if you did not write it down, or if step 2 sent you here, restore the backup and restart the app. This is the safe choice when you cannot tell.
-   - [Restore the database backup](https://doc.scalingo.com/databases/postgresql/shared-resources/guides/restoring) you took before the upgrade, and, see Backups, the bucket from the same moment. Everything written after the backup is lost, such as items created or edited, new accounts and changed passwords, including what users saved while the old version kept running. The sooner you restore, the less is lost. Scalingo warns that a restore causes downtime.
-   - The restore does not empty the database. Scalingo's procedure runs `pg_restore --clean --if-exists`, which only drops and recreates what the backup contains: a table created by the failed upgrade stays. The next upgrade may then fail with `Error running migrations` while the count is unchanged, and restoring again would not help. If that happens, do not retry: ask [Scalingo support](https://doc.scalingo.com/platform/app/rollback#by-previous-buildrelease) to restore the backup into an empty database. Scalingo's documentation gives no command to empty it.
-   - Restart the app, and do not deploy again. Scalingo kept the previous version running, so the restart runs it against the restored database, and no migration runs again ([restart](https://doc.scalingo.com/tools/cli/features)).
+2. If the count is the same, no migration ran:
+   - for a build error, or one of the start messages in Troubleshooting, nothing else changed either: fix the cause (the deployment logs are `scalingo --app <app> deployment-logs`) and deploy again;
+   - for `Error running migrations`, do not restore: each migration runs in its own transaction, so the one that failed left nothing behind, and a restore would only lose what users saved for nothing. Do not deploy again either: it would fail the same way, for example because a table the migration creates is already there, left by an earlier restore (a restore does not empty the database, see step 3). Ask Scalingo support (support@scalingo.com) to restore the backup into an empty database; the old version keeps running meanwhile;
+   - for any other failure, go to step 3: the count only records migrations, and Vaultwarden also rewrites some data when it starts (two-factor entries, for example), which the count does not show.
+3. If the count is higher, if you did not write it down, or if step 2 sent you here, restore the backup and start the app again, without deploying. This is the safe choice when you cannot tell.
+   - Stop the app first. Scalingo requires the database to be completely stopped while a backup is restored ([restoring](https://doc.scalingo.com/databases/postgresql/shared-resources/guides/restoring)), and a restore under a running app would let users write into tables the restore is about to reload. Note the number of `web` containers, in the `AMOUNT` column (`n` below), then scale the app to 0 and wait for it to finish:
 
      ```
-     scalingo --app <app> restart
+     scalingo --app <app> scale
+     scalingo --app <app> scale --synchronous web:0
+     ```
+
+   - [Restore the database backup](https://doc.scalingo.com/databases/postgresql/shared-resources/guides/restoring) you took before the upgrade, and, see Backups, the bucket from the same moment. Everything written after the backup is lost, such as items created or edited, new accounts and changed passwords, including what users saved while the old version kept running. The sooner you restore, the less is lost. The app is down from the scale-down to the scale-up below.
+   - The restore does not empty the database. Scalingo's procedure runs `pg_restore --clean --if-exists`, which only drops and recreates what the backup contains: a table created by the failed upgrade stays. The next upgrade may then fail with `Error running migrations` while the count is unchanged, and restoring again would not help. If that happens, see step 2: ask Scalingo support to restore the backup into an empty database. Scalingo's documentation gives no command to empty it.
+   - Scale the app back to the number you noted, and do not deploy again. Scalingo kept the previous version as the running release, so the containers started now run it against the restored database, and no migration runs again ([scaling](https://doc.scalingo.com/platform/app/scaling)). Run `scalingo --app <app> scale` to check that the `web` line shows your number again.
+
+     ```
+     scalingo --app <app> scale --synchronous web:<n>
      ```
 
 Scalingo itself warns that a rollback after a migration can create more problems than it solves ([rolling back](https://doc.scalingo.com/platform/app/rollback)): the backup is what you rely on.
