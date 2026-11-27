@@ -26,7 +26,7 @@ check_release() {
     end
     puts Array(pr["paths"])
   ' "$workflow" 2> /dev/null)"; then
-    problem "$workflow" "$paths"
+    problem "$workflow" "${paths:-cannot read the pull_request paths filter}"
     return
   fi
   wanted="$(
@@ -71,6 +71,15 @@ expect_problem "dist/other-name.tar.gz must be dist/asset.tar.gz" release_fixtur
 expect_problem "env ASSET is missing" release_fixture no-asset-env
 expect_problem "invalid YAML" release_fixture broken-yaml
 expect_problem "unexpected shape" release_fixture unexpected-shape
+
+# When ruby is missing or crashes, the problem still says what failed.
+release_without_ruby() {
+  local empty
+  empty="$(mktemp -d)"
+  PATH="$empty" release_fixture ok
+  rmdir "$empty"
+}
+expect_problem "cannot read the pull_request paths filter" release_without_ruby
 
 # A workflow that does not parse is one problem naming the file, not a
 # "paths filter must list ..." line for every path.

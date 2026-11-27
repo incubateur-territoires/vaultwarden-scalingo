@@ -17,3 +17,6 @@ jobs:
           fi
           sudo curl --proto '=https' --fail --silent https://example.org/a
           echo https://example.org/a | xargs -n1 curl --proto '=https' --fail --silent
+          FOO=bar curl --proto '=https' --fail --silent https://example.org/a
+          sudo -u root curl --proto '=https' --fail --silent https://example.org/a
+          echo https://example.org/a | xargs -I {} curl --proto '=https' --fail --silent {}
