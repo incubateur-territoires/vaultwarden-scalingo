@@ -35,12 +35,20 @@ expect_problem "permissions must be declared" check_workflow tests/fixtures/work
 expect_no_problem check_workflow tests/fixtures/workflows/anchors-and-dates.yml
 # check_curl_proto FILE: every curl command restricts its protocols with
 # --proto '=https', so a redirect cannot leave HTTPS (Sonar S6506). A command
-# may continue over several lines with a trailing backslash.
+# may continue over several lines with a trailing backslash. curl is a command
+# at the start of a line, after `- run:`, after ; & | ( or a backquote, and
+# after the words that run what follows (if, !, then, sudo, xargs, ...) with
+# their options (-n1, -u root, -I {}) and VAR=value prefixes, and after bare
+# VAR=value prefixes. Not detected: a quoted value with a space
+# (FOO="a b" curl), a curl whose name is built or quoted ('curl'), and an
+# option argument that is not one word.
 check_curl_proto() {
   local file="$1" report line
   report="$(ruby -e '
+    assign = /(\w+=\S*\s+)*/
+    words = /((if|elif|then|else|do|while|until|!|sudo|xargs|exec|time|nohup|command|env)\s+(-\S+\s+(\{\}\s+|\w+\s+)?|\w+=\S*\s+)*)*/
     File.read(ARGV[0]).gsub(/\\\n\s*/, " ").each_line do |l|
-      next unless l.strip =~ /(\A(-\s+)?(run:\s+)?|[;&|(`]\s*)curl\s/
+      next unless l.strip =~ /(\A(-\s+)?(run:\s+)?|[;&|(`]\s*)#{assign}#{words}curl\s/
       puts "curl without --proto \x27=https\x27: #{l.strip[0, 80]}" unless l.include?("--proto \x27=https\x27")
     end
   ' "$file" 2>&1)"
@@ -53,6 +61,14 @@ EOF
 
 expect_problem "curl without --proto" check_curl_proto tests/fixtures/workflows/curl-no-proto.yml
 expect_no_problem check_curl_proto tests/fixtures/workflows/curl-proto.yml
+# One fixture per command position: after if, if !, then, sudo, xargs, or on a
+# one-line `- run:`. The last one holds every form with the flag, and
+# mentions of curl that are not commands.
+for form in oneline if if-not "then" sudo xargs assign sudo-user xargs-replace; do
+  expect_problem "curl without --proto" check_curl_proto "tests/fixtures/workflows/curl-$form-no-proto.yml"
+done
+expect_no_problem check_curl_proto tests/fixtures/workflows/curl-oneline-proto.yml
+expect_no_problem check_curl_proto tests/fixtures/workflows/curl-forms-proto.yml
 optional_tool_selftest actionlint
 
 if [ -d .github/workflows ]; then
