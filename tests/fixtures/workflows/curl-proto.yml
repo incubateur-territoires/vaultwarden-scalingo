@@ -1,0 +1,12 @@
+name: curl with proto
+on: [push]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          curl --proto '=https' --fail --silent --location \
+            --output "$RUNNER_TEMP/a.tar.gz" \
+            "https://example.org/a.tar.gz"

@@ -1,0 +1,188 @@
+name: Release
+
+# Builds the Vaultwarden release asset that the Scalingo build installs, and
+# proves it runs on the Scalingo stacks. Uploading it is done only when the
+# maintainer publishes a release: this workflow never creates a tag or a release.
+on:
+  pull_request:
+    paths:
+      - VERSIONS
+      - .github/workflows/release.yml
+      - scripts/package-release.sh
+      - scripts/lib/kv.sh
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ASSET: vaultwarden-scalingo-x86_64-linux.tar.gz
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04 # pinned: ubuntu-latest would move the glibc floor silently
+    timeout-minutes: 90
+    outputs:
+      vaultwarden_version: ${{ steps.versions.outputs.vaultwarden_version }}
+      web_vault_version: ${{ steps.versions.outputs.web_vault_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read VERSIONS
+        id: versions
+        run: |
+          . scripts/lib/kv.sh
+          vaultwarden_version="$(read_kv VERSIONS VAULTWARDEN_VERSION)"
+          source_sha256="$(read_kv VERSIONS VAULTWARDEN_SOURCE_SHA256)"
+          web_vault_version="$(read_kv VERSIONS WEB_VAULT_VERSION)"
+          web_vault_sha256="$(read_kv VERSIONS WEB_VAULT_SHA256)"
+          [[ $vaultwarden_version =~ ^[0-9]+(\.[0-9]+)*$ ]] || { echo "::error::VAULTWARDEN_VERSION is not a version"; exit 1; }
+          [[ $web_vault_version =~ ^v?[0-9]{4}\.[0-9]+\.[0-9]+$ ]] || { echo "::error::WEB_VAULT_VERSION is not a version"; exit 1; }
+          [[ $source_sha256 =~ ^[0-9a-f]{64}$ ]] || { echo "::error::VAULTWARDEN_SOURCE_SHA256 is not a sha256"; exit 1; }
+          [[ $web_vault_sha256 =~ ^[0-9a-f]{64}$ ]] || { echo "::error::WEB_VAULT_SHA256 is not a sha256"; exit 1; }
+          {
+            echo "vaultwarden_version=$vaultwarden_version"
+            echo "source_sha256=$source_sha256"
+            echo "web_vault_version=$web_vault_version"
+            echo "web_vault_sha256=$web_vault_sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download the Vaultwarden source and verify its checksum
+        env:
+          VERSION: ${{ steps.versions.outputs.vaultwarden_version }}
+          SHA256: ${{ steps.versions.outputs.source_sha256 }}
+        run: |
+          curl --proto '=https' --fail --silent --show-error --location --retry 3 \
+            --output "$RUNNER_TEMP/vaultwarden-src.tar.gz" \
+            "https://github.com/dani-garcia/vaultwarden/archive/refs/tags/${VERSION}.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/vaultwarden-src.tar.gz" | sha256sum --check -
+          mkdir "$RUNNER_TEMP/vaultwarden-src"
+          tar -xzf "$RUNNER_TEMP/vaultwarden-src.tar.gz" -C "$RUNNER_TEMP/vaultwarden-src" --strip-components=1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libpq-dev libssl-dev pkg-config
+
+      - name: Build Vaultwarden (postgresql, s3)
+        working-directory: ${{ runner.temp }}/vaultwarden-src
+        env:
+          # The source archive has no git metadata: without this the binary
+          # reports "(Version info from Git not present)".
+          VW_VERSION: ${{ steps.versions.outputs.vaultwarden_version }}
+        run: |
+          # The toolchain is pinned by the source's rust-toolchain.toml.
+          rustup show active-toolchain || rustup toolchain install
+          started="$(date +%s)"
+          cargo build --release --locked --features postgresql,s3
+          echo "BUILD_SECONDS=$(( $(date +%s) - started ))" >> "$GITHUB_ENV"
+
+      - name: Download the web vault and verify its checksum
+        env:
+          VERSION: ${{ steps.versions.outputs.web_vault_version }}
+          SHA256: ${{ steps.versions.outputs.web_vault_sha256 }}
+        run: |
+          curl --proto '=https' --fail --silent --show-error --location --retry 3 \
+            --output "$RUNNER_TEMP/web-vault.tar.gz" \
+            "https://github.com/dani-garcia/bw_web_builds/releases/download/${VERSION}/bw_web_${VERSION}.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/web-vault.tar.gz" | sha256sum --check -
+
+      - name: Package the release asset
+        run: |
+          scripts/package-release.sh \
+            "$RUNNER_TEMP/vaultwarden-src/target/release/vaultwarden" \
+            "$RUNNER_TEMP/web-vault.tar.gz" \
+            dist
+          (cd dist && sha256sum --check SHA256SUMS)
+          {
+            echo "### Release asset"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Build duration (cargo build) | $((BUILD_SECONDS / 60)) min $((BUILD_SECONDS % 60)) s |"
+            echo "| Asset size | $(wc -c < "dist/$ASSET" | tr -d ' ') bytes |"
+            echo "| SHA256 | \`$(cut -d ' ' -f 1 dist/SHA256SUMS)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-asset
+          path: |
+            dist/vaultwarden-scalingo-x86_64-linux.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [scalingo-24, scalingo-26]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-asset
+          path: dist
+
+      - name: Extract the asset
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          mkdir "$RUNNER_TEMP/asset"
+          tar -xzf "dist/$ASSET" -C "$RUNNER_TEMP/asset"
+
+      - name: ldd and --version on ${{ matrix.stack }}
+        env:
+          STACK: ${{ matrix.stack }}
+          VAULTWARDEN_VERSION: ${{ needs.build.outputs.vaultwarden_version }}
+          WEB_VAULT_VERSION: ${{ needs.build.outputs.web_vault_version }}
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/asset/vaultwarden:/vaultwarden:ro" \
+            --env VAULTWARDEN_VERSION --env WEB_VAULT_VERSION \
+            "scalingo/${STACK}:latest" bash -c '
+              set -euo pipefail
+              ldd /vaultwarden/vaultwarden > /tmp/ldd.txt
+              cat /tmp/ldd.txt
+              if grep -q "not found" /tmp/ldd.txt; then
+                echo "::error::a shared library is missing on this stack" >&2
+                exit 1
+              fi
+              cd /tmp
+              WEB_VAULT_FOLDER=/vaultwarden/web-vault /vaultwarden/vaultwarden --version > /tmp/version.txt
+              cat /tmp/version.txt
+              [ "$(sed -n 1p /tmp/version.txt)" = "Vaultwarden $VAULTWARDEN_VERSION" ] ||
+                { echo "::error::--version does not report Vaultwarden $VAULTWARDEN_VERSION" >&2; exit 1; }
+              [ "$(sed -n 2p /tmp/version.txt)" = "Web-Vault ${WEB_VAULT_VERSION#v}" ] ||
+                { echo "::error::--version does not report web vault ${WEB_VAULT_VERSION#v}" >&2; exit 1; }
+            '
+
+  publish:
+    if: github.event_name == 'release'
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-asset
+          path: dist
+
+      # No --clobber: a release that already has these assets is an error.
+      - name: Upload the asset to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$TAG" "dist/$ASSET" dist/SHA256SUMS --repo "$GITHUB_REPOSITORY"
