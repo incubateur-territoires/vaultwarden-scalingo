@@ -27,7 +27,7 @@ upstream_says() {
 }
 
 upstream_check() {
-  local work sum
+  local work sum got
   work="$(mktemp -d)"
   sum=354de9056c871e48db84975985e7d57c111ac6537bd4e4720488019e8638060f
 
@@ -73,31 +73,53 @@ upstream_check() {
   upstream_fails "usage" sha256-of tests/fixtures/upstream/sha256sums.txt
   upstream_fails "usage" nothing-like-this x
 
-  # commit-of: the commit that `git archive` writes in the header of a tar,
-  # read from a gzip like the ones GitHub serves. A tar without it is refused.
-  local repo commit
+  # tree-of: the git tree of the files inside a source archive, read from a gzip
+  # like the ones GitHub serves (one top-level directory, `git archive` layout).
+  # The workflow compares it with the tree of the commit that the API names for
+  # the tag: that is what ties the files to the commit, not the header of the tar.
+  local repo tree
   repo="$work/repo"
   mkdir "$repo"
   (
     cd "$repo" || exit 1
     git init -q .
-    echo hello > file
-    git add file
+    mkdir src
+    echo hello > src/main.rs
+    printf '#!/bin/sh\n' > run.sh
+    chmod +x run.sh
+    ln -s src/main.rs link
+    printf 'ignored.txt\n' > .gitignore
+    echo kept > ignored.txt
+    git add --force .
     git -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false commit -q -m one
-    git archive --format=tar HEAD | gzip -n > "$work/with-commit.tar.gz"
-    git rev-parse HEAD > "$work/commit.txt"
+    git archive --format=tar --prefix=project-1.0/ HEAD > "$work/genuine.tar"
+    gzip -n < "$work/genuine.tar" > "$work/genuine.tar.gz"
+    git rev-parse 'HEAD^{tree}' > "$work/tree.txt"
   ) > /dev/null 2>&1
-  commit="$(cat "$work/commit.txt" 2> /dev/null)"
-  if [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
+  tree="$(cat "$work/tree.txt" 2> /dev/null)"
+  if [[ ! $tree =~ ^[0-9a-f]{40}$ ]]; then
     problem scripts/upstream-web-vault.sh "the test could not make a git archive"
   else
-    upstream_says "$commit" commit-of "$work/with-commit.tar.gz"
+    # Executable bit, symlink and a file that .gitignore names all count.
+    upstream_says "$tree" tree-of "$work/genuine.tar.gz"
+    # A tar whose header names the genuine commit but whose files are others:
+    # `git get-tar-commit-id` accepts it, the tree must not match.
+    mkdir "$work/evil" "$work/evil/project-1.0" "$work/evil/project-1.0/src"
+    echo 'fn main() { evil() }' > "$work/evil/project-1.0/src/main.rs"
+    { head -c 1024 "$work/genuine.tar"; tar -cf - -C "$work/evil" project-1.0; } | gzip -n > "$work/lying.tar.gz"
+    if [ -z "$(gzip -dc "$work/lying.tar.gz" | git get-tar-commit-id 2> /dev/null)" ]; then
+      problem scripts/upstream-web-vault.sh "the test could not make a tar that lies about its commit"
+    else
+      got="$(bash scripts/upstream-web-vault.sh tree-of "$work/lying.tar.gz" 2> /dev/null || true)"
+      if [ -z "$got" ] || [ "$got" = "$tree" ]; then
+        problem scripts/upstream-web-vault.sh "tree-of must give another tree for a tar that lies about its commit (got: ${got:-nothing})"
+      fi
+    fi
   fi
-  tar -cf - -C "$repo" file | gzip -n > "$work/no-commit.tar.gz"
-  upstream_fails "no commit id" commit-of "$work/no-commit.tar.gz"
   printf 'not a tar' | gzip -n > "$work/not-tar.tar.gz"
-  upstream_fails "no commit id" commit-of "$work/not-tar.tar.gz"
-  upstream_fails "cannot read" commit-of "$work/absent.tar.gz"
+  upstream_fails "not an archive" tree-of "$work/not-tar.tar.gz"
+  upstream_fails "cannot read" tree-of "$work/absent.tar.gz"
+  upstream_fails "usage" tree-of
 
   rm -rf "$work"
 }
@@ -114,12 +136,21 @@ check_update_workflow() {
     on = doc["on"] || doc[true] || {}
     puts "must run on a schedule" unless on.is_a?(Hash) && on.key?("schedule")
     puts "must have a workflow_dispatch trigger" unless on.is_a?(Hash) && on.key?("workflow_dispatch")
+    jobs = (doc["jobs"] || {}).values.select { |j| j.is_a?(Hash) }
+    puts "must not run twice at once (no concurrency group)" unless doc.key?("concurrency") || jobs.any? { |j| j.key?("concurrency") }
+    jobs.flat_map { |j| j["steps"] || [] }.each do |step|
+      next unless step.is_a?(Hash) && step["uses"].to_s.start_with?("actions/checkout@")
+      puts "must not keep the token in .git/config (checkout needs persist-credentials: false)" unless (step["with"] || {})["persist-credentials"] == false
+    end
   ' "$file" 2>&1)"
   while IFS= read -r line; do
     [ -n "$line" ] && problem "$file" "$line"
   done <<EOF
 $report
 EOF
+  if grep -qE 'commits/[$]' "$file"; then
+    problem "$file" "asks the API for a commit by a bare name: use commits/refs/tags/NAME (a branch of the same name answers too)"
+  fi
   while IFS= read -r script; do
     [ -n "$script" ] || continue
     [ -f "$script" ] || problem "$file" "names $script, which does not exist"
@@ -131,6 +162,10 @@ EOF
 expect_problem "must run on a schedule" check_update_workflow tests/fixtures/upstream/update-no-schedule.yml
 expect_problem "must have a workflow_dispatch trigger" check_update_workflow tests/fixtures/upstream/update-no-dispatch.yml
 expect_problem "scripts/absent.sh, which does not exist" check_update_workflow tests/fixtures/upstream/update-missing-script.yml
+
+expect_problem "no concurrency group" check_update_workflow tests/fixtures/upstream/update-no-concurrency.yml
+expect_problem "persist-credentials: false" check_update_workflow tests/fixtures/upstream/update-persists-credentials.yml
+expect_problem "by a bare name" check_update_workflow tests/fixtures/upstream/update-bare-tag.yml
 
 if [ -f .github/workflows/update.yml ]; then
   check_update_workflow .github/workflows/update.yml

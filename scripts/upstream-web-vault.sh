@@ -7,8 +7,9 @@
 #       the web vault version Vaultwarden pins (`vault_version:`), e.g. v2026.10.1
 #   scripts/upstream-web-vault.sh sha256-of sha256sums.txt NAME
 #       the checksum upstream lists for NAME in its sha256sums.txt
-#   scripts/upstream-web-vault.sh commit-of ARCHIVE.tar.gz
-#       the commit id that `git archive` wrote in the header of the archive
+#   scripts/upstream-web-vault.sh tree-of ARCHIVE.tar.gz
+#       the git tree id of the files inside a source archive (the single
+#       top-level directory of the archive is not part of it)
 #
 # A file that does not have exactly what is asked is refused: exit 1, the reason
 # on stderr, nothing on stdout.
@@ -20,7 +21,9 @@ fail() {
 }
 
 readable() {
-  [ -f "$1" ] && [ -r "$1" ] || fail "cannot read $1"
+  if [ ! -f "$1" ] || [ ! -r "$1" ]; then
+    fail "cannot read $1"
+  fi
 }
 
 vault_version_of() {
@@ -53,15 +56,38 @@ sha256_from_sums() {
   printf '%s\n' "$sum"
 }
 
-# GitHub builds source archives with `git archive`, which records the commit in
-# the header of the tar. It is what ties the archive to a commit that the API
-# names for a tag. (git does the reading: the pax header is not parsed here.)
-archive_commit_id() {
-  local file="$1" id
+# The git tree of the files in a source archive, as `git write-tree` computes
+# it. GitHub builds the archive with `git archive`, so for a tag it is the tree
+# of the tagged commit; the workflow compares it with the tree that the API
+# gives for that commit. That ties every file to the commit. (The commit id in
+# the header of the tar proves nothing: anyone who makes a tar can write it.)
+# The archive is unpacked in a new directory and hashed with no filter, no
+# ignore rule and no attribute of its own applied, so that what is hashed is
+# what is in the tar. A tree that differs by design (export-ignore,
+# export-subst in the repository) makes the comparison fail, never pass.
+archive_tree_id() {
+  local file="$1" dir tree
   readable "$file"
-  id="$(gzip -dc "$file" 2> /dev/null | git get-tar-commit-id 2> /dev/null || true)"
-  [[ $id =~ ^[0-9a-f]{40}$ ]] || fail "no commit id in $file (not a git archive)"
-  printf '%s\n' "$id"
+  dir="$(mktemp -d)"
+  mkdir "$dir/files" "$dir/git"
+  if ! gzip -dc "$file" 2> /dev/null | tar -x -f - -C "$dir/files" --strip-components=1 2> /dev/null; then
+    rm -rf "$dir"
+    fail "$file is not an archive that tar can read"
+  fi
+  # Hermetic git: no user or system configuration, nothing that rewrites files.
+  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
+  export GIT_DIR="$dir/git" GIT_WORK_TREE="$dir/files"
+  cd "$dir/files"
+  git init -q
+  mkdir -p "$GIT_DIR/info"
+  echo '* -text -filter -ident -working-tree-encoding' > "$GIT_DIR/info/attributes"
+  tree=""
+  if git -c core.autocrlf=false -c core.safecrlf=false add --all --force . 2> /dev/null; then
+    tree="$(git write-tree 2> /dev/null || true)"
+  fi
+  rm -rf "$dir"
+  [[ $tree =~ ^[0-9a-f]{40}$ ]] || fail "cannot compute the tree of $file"
+  printf '%s\n' "$tree"
 }
 
 main() {
@@ -74,11 +100,11 @@ main() {
       [ "$#" -eq 3 ] || fail "usage: upstream-web-vault.sh sha256-of sha256sums.txt NAME"
       sha256_from_sums "$2" "$3"
       ;;
-    commit-of)
-      [ "$#" -eq 2 ] || fail "usage: upstream-web-vault.sh commit-of ARCHIVE.tar.gz"
-      archive_commit_id "$2"
+    tree-of)
+      [ "$#" -eq 2 ] || fail "usage: upstream-web-vault.sh tree-of ARCHIVE.tar.gz"
+      archive_tree_id "$2"
       ;;
-    *) fail "usage: upstream-web-vault.sh vault-version|sha256-of|commit-of ARGS..." ;;
+    *) fail "usage: upstream-web-vault.sh vault-version|sha256-of|tree-of ARGS..." ;;
   esac
 }
 

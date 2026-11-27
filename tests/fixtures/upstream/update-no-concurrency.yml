@@ -1,0 +1,16 @@
+# Fixture: an update workflow that two runs can execute at once.
+name: Update
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: scripts/set-version.sh VERSIONS WEB_VAULT_VERSION v1
