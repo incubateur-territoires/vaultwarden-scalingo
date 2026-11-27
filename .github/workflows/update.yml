@@ -1,0 +1,199 @@
+name: Update
+
+# Opens a pull request when Vaultwarden publishes a release: it bumps the
+# upstream versions and checksums in VERSIONS, nothing else. The maintainer
+# merges it and publishes a release of this repository (release.yml then
+# builds it and opens the pull request that pins it). This workflow never
+# merges, tags or publishes anything, and needs no secret.
+#
+# Weekly, on Monday: Vaultwarden publishes every few weeks, a run with nothing
+# to do is one API call, and a release is picked up within the week. For an
+# urgent one (a security release), run it by hand: workflow_dispatch.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time: a Monday run and a manual one at the same moment would both
+# pass the guards below and both push. The second waits, then sees the branch.
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UPSTREAM: dani-garcia/vaultwarden
+  WEB_VAULT_UPSTREAM: dani-garcia/bw_web_builds
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # push the deps/vaultwarden-<version> branch
+      pull-requests: write # open the pull request
+      actions: write # start ci.yml and release.yml on that branch: a pull request opened with GITHUB_TOKEN triggers no workflow
+    env:
+      # The branch the run was started on: the bump branch starts from it and the
+      # pull request targets it. A scheduled run is always on the default branch;
+      # a manual run on another branch proposes the bump to that branch.
+      BASE: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # the token goes to the push step only, not into .git/config
+
+      - name: Look for a newer Vaultwarden release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . scripts/lib/kv.sh
+          # The latest release that is neither a draft nor a prerelease.
+          latest="$(gh api "repos/$UPSTREAM/releases/latest" --jq 'select(.draft == false and .prerelease == false) | .tag_name')"
+          [[ $latest =~ ^[0-9]+(\.[0-9]+)*$ ]] || { echo "::error::The latest $UPSTREAM release '$latest' is not a plain version: update VERSIONS by hand."; exit 1; }
+          current="$(read_kv VERSIONS VAULTWARDEN_VERSION)"
+          branch="deps/vaultwarden-$latest"
+          update=false
+          # Bump pull requests still open, whatever the version they propose.
+          open_prs="$(gh pr list --state open --limit 100 --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("deps/vaultwarden-")) | "#\(.number) (\(.headRefName))"' | tr '\n' ' ')"
+          if [ "$latest" = "$current" ]; then
+            echo "::notice::VERSIONS already has the latest Vaultwarden release ($current): nothing to do."
+          elif [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)" != "$latest" ]; then
+            echo "::notice::VERSIONS has $current, which is newer than the latest release $latest: nothing to do."
+          elif [ -n "$open_prs" ]; then
+            echo "::notice::A Vaultwarden bump is still open: $open_prs. Merge or close it, then $latest is proposed."
+          elif gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" > /dev/null 2>&1; then
+            # No pull request from it is open (checked above): it was closed without
+            # merging, or the run that pushed it could not open one.
+            last="$(gh pr list --head "$branch" --state all --limit 1 --json number,state --jq '.[] | "#\(.number), \(.state | ascii_downcase)"')"
+            echo "::error::The branch $branch exists but no pull request from it is open (${last:-no pull request was ever opened from it}). Delete the branch to have $latest proposed again, or open a pull request from it by hand."
+            exit 1
+          else
+            update=true
+          fi
+          {
+            echo "update=$update"
+            echo "current=$current"
+            echo "latest=$latest"
+            echo "branch=$branch"
+          } >> "$GITHUB_OUTPUT"
+
+      # Where each checksum comes from (the pull request says it too):
+      # - WEB_VAULT_SHA256: the sha256sums.txt that bw_web_builds publishes
+      #   with the web vault release; the tarball is then checked against it.
+      # - VAULTWARDEN_SOURCE_SHA256: upstream publishes none for a source
+      #   archive. It is computed here from the archive GitHub serves for the
+      #   tag, once the files in that archive are shown to be the files of the
+      #   commit that the API names for the tag (same git tree). That shows the
+      #   archive is that commit, not that the commit is sound. The release
+      #   build checks the checksum again at every build.
+      - name: Read upstream's checksums
+        id: upstream
+        if: steps.latest.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.latest.outputs.latest }}
+        run: |
+          src="$RUNNER_TEMP/vaultwarden-$LATEST.tar.gz"
+          curl --proto '=https' --fail --silent --show-error --location --retry 3 \
+            --output "$src" "https://github.com/$UPSTREAM/archive/refs/tags/$LATEST.tar.gz"
+          # refs/tags/: a branch with the same name as the tag would answer too.
+          read -r tag_commit tag_tree <<< "$(gh api "repos/$UPSTREAM/commits/refs/tags/$LATEST" --jq '[.sha, .commit.tree.sha] | join(" ")')"
+          if [[ ! $tag_commit =~ ^[0-9a-f]{40}$ || ! $tag_tree =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The API gave no commit for the tag $LATEST. Not updating."
+            exit 1
+          fi
+          archive_tree="$(scripts/upstream-web-vault.sh tree-of "$src")"
+          if [ "$archive_tree" != "$tag_tree" ]; then
+            echo "::error::The files of the source archive of $LATEST (tree $archive_tree) are not the files of commit $tag_commit (tree $tag_tree), the one the API names for the tag. Not updating."
+            exit 1
+          fi
+          source_sha256="$(sha256sum "$src" | cut -d ' ' -f 1)"
+
+          # The web vault that this Vaultwarden release pins, never the latest one.
+          tar -xzOf "$src" "vaultwarden-$LATEST/docker/DockerSettings.yaml" > "$RUNNER_TEMP/DockerSettings.yaml"
+          web_vault_version="$(scripts/upstream-web-vault.sh vault-version "$RUNNER_TEMP/DockerSettings.yaml")"
+          web="bw_web_$web_vault_version.tar.gz"
+          base="https://github.com/$WEB_VAULT_UPSTREAM/releases/download/$web_vault_version"
+          curl --proto '=https' --fail --silent --show-error --location --retry 3 \
+            --output "$RUNNER_TEMP/sha256sums.txt" "$base/sha256sums.txt"
+          web_vault_sha256="$(scripts/upstream-web-vault.sh sha256-of "$RUNNER_TEMP/sha256sums.txt" "$web")"
+          curl --proto '=https' --fail --silent --show-error --location --retry 3 \
+            --output "$RUNNER_TEMP/$web" "$base/$web"
+          echo "$web_vault_sha256  $RUNNER_TEMP/$web" | sha256sum --check -
+          {
+            echo "source_sha256=$source_sha256"
+            echo "commit=$tag_commit"
+            echo "tree=$tag_tree"
+            echo "web_vault_version=$web_vault_version"
+            echo "web_vault_sha256=$web_vault_sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Bump VERSIONS on a new branch
+        id: bump
+        if: steps.latest.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.latest.outputs.current }}
+          LATEST: ${{ steps.latest.outputs.latest }}
+          BRANCH: ${{ steps.latest.outputs.branch }}
+          SOURCE_SHA256: ${{ steps.upstream.outputs.source_sha256 }}
+          WEB_VAULT_VERSION: ${{ steps.upstream.outputs.web_vault_version }}
+          WEB_VAULT_SHA256: ${{ steps.upstream.outputs.web_vault_sha256 }}
+        run: |
+          . scripts/lib/kv.sh
+          old_web_vault="$(read_kv VERSIONS WEB_VAULT_VERSION)"
+          git switch --create "$BRANCH"
+          scripts/set-version.sh VERSIONS VAULTWARDEN_VERSION "$LATEST"
+          scripts/set-version.sh VERSIONS VAULTWARDEN_SOURCE_SHA256 "$SOURCE_SHA256"
+          scripts/set-version.sh VERSIONS WEB_VAULT_VERSION "$WEB_VAULT_VERSION"
+          scripts/set-version.sh VERSIONS WEB_VAULT_SHA256 "$WEB_VAULT_SHA256"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --all --message "chore(deps): bump Vaultwarden from $CURRENT to $LATEST"
+          # The token is given to this push only (checkout does not keep it).
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=Authorization: basic $auth" push origin "$BRANCH"
+          echo "old_web_vault=$old_web_vault" >> "$GITHUB_OUTPUT"
+
+      - name: Open the pull request and start its checks
+        if: steps.latest.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.latest.outputs.current }}
+          LATEST: ${{ steps.latest.outputs.latest }}
+          BRANCH: ${{ steps.latest.outputs.branch }}
+          COMMIT: ${{ steps.upstream.outputs.commit }}
+          TREE: ${{ steps.upstream.outputs.tree }}
+          SOURCE_SHA256: ${{ steps.upstream.outputs.source_sha256 }}
+          WEB_VAULT_VERSION: ${{ steps.upstream.outputs.web_vault_version }}
+          WEB_VAULT_SHA256: ${{ steps.upstream.outputs.web_vault_sha256 }}
+          OLD_WEB_VAULT: ${{ steps.bump.outputs.old_web_vault }}
+        run: |
+          title="chore(deps): bump Vaultwarden from $CURRENT to $LATEST"
+          body="Bumps the upstream versions in \`VERSIONS\`: Vaultwarden $CURRENT -> $LATEST ([release notes](https://github.com/$UPSTREAM/releases/tag/$LATEST)), web vault $OLD_WEB_VAULT -> $WEB_VAULT_VERSION (the one that Vaultwarden $LATEST pins in \`docker/DockerSettings.yaml\`, not the latest web vault).
+
+          Where the checksums come from:
+          - web vault \`$WEB_VAULT_SHA256\`: the \`sha256sums.txt\` of [bw_web_builds $WEB_VAULT_VERSION](https://github.com/$WEB_VAULT_UPSTREAM/releases/tag/$WEB_VAULT_VERSION); the tarball was checked against it.
+          - source \`$SOURCE_SHA256\`: computed from the archive GitHub serves for tag $LATEST. Vaultwarden publishes no checksum for it; the files of the archive were checked to be exactly the files of commit \`$COMMIT\` (same git tree \`$TREE\`), the commit the GitHub API names for the tag. That shows the archive is that commit, not that the commit is sound: read the release notes. The release build checks the checksum again.
+
+          Read the release notes first: database migrations run at start and are not reversible.
+
+          Merging this changes nothing for Scalingo. After merging, publish a release of this repository: the release workflow builds it and opens the pull request that pins it.
+
+          Opened by the update workflow, which also started \`ci.yml\` and \`release.yml\` on this branch (a pull request opened with GITHUB_TOKEN starts no workflow): the build is proven before you merge."
+          if ! gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body "$body"; then
+            echo "::error::GitHub refused to open the pull request. Enable Settings > Actions > General > Workflow permissions > 'Allow GitHub Actions to create and approve pull requests', then delete the branch $BRANCH and re-run this workflow. Or open a pull request from $BRANCH by hand."
+            exit 1
+          fi
+          gh workflow run ci.yml --ref "$BRANCH"
+          gh workflow run release.yml --ref "$BRANCH"

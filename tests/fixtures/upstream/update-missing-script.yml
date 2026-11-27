@@ -1,0 +1,13 @@
+# Fixture: an update workflow that runs a script that is not in the repository.
+name: Update
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: scripts/absent.sh
