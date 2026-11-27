@@ -106,3 +106,289 @@ Source version: the answer to point 1.
 - Version unknown, or newer than the target: stop. Ask the provider for the version, and if it is newer, wait for a release at least as new.
 
 Why this rule exists: the migrations are embedded in the program and run at every start ([`DbPool::from_config`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/db/mod.rs#L182-L206), [`run_pending_migrations`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/db/mod.rs#L480-L533)), and the program only ever runs them forward. The rule is derived from that: upstream does not state it. For SQLite and MySQL the load is data only, so it skips the data changes some migrations make: that is our inference, not stated upstream, which is why an equal version is the safe case. The README says the same of an upgrade: [Upgrade](../README.md#upgrade).
+
+## Rehearse first
+
+The rehearsal is the whole migration done once into a throwaway app, so that the cutover is a repetition. Do it on a copy of the data, and never with the real `DOMAIN`: until the cutover, the real address must keep answering from the source, and two live instances cannot share one.
+
+Create the throwaway app with the deploy button, as the README says ([One-click deployment](../README.md#one-click-deployment)), and give it:
+
+- a `DOMAIN` of its own, of the form `https://<throwaway-app>.osc-fr1.scalingo.io`;
+- a bucket of its own: the app always stores its files under the prefix `vaultwarden/` of its bucket ([`scripts/start.sh`](https://github.com/incubateur-territoires/vaultwarden-scalingo/blob/main/scripts/start.sh)), so a second prefix in the real bucket is not possible, and the rehearsal must not touch real data;
+- `SIGNUPS_ALLOWED=false`: the form proposes `true` ([`scalingo.json`](https://github.com/incubateur-territoires/vaultwarden-scalingo/blob/main/scalingo.json)).
+
+Then do each step below, in order, on the copies the provider gave you: [Load the database](#load-the-database), [Copy the files to the bucket](#copy-the-files-to-the-bucket), [Set the settings](#set-the-settings). The checks that follow tell you the rehearsal is done.
+
+### Rehearsal checks
+
+1. Read the line `Starting Vaultwarden <version>` in the logs (`scalingo --app <app> logs -n 1000`) and compare it with the version of the source: the target must not be older (see [Check the versions](#check-the-versions)). If you uploaded a `config.json`, look for the warning `[WARNING] The following environment variables are being overridden by the config.json file.` ([`src/config.rs`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/config.rs#L299-L303)): note whether it is there, and read the settings it lists.
+2. Log in to the web vault of the throwaway app as a user of the source, with the same master password, and compare the number of items with the source's.
+3. Download an attachment and the file of a Send that exist on the source. For a Send, use its link with the address of the throwaway app in place of the source's: not verified, try it.
+4. Log in as a user who has two-factor authentication, with the method they already use. A security key or a passkey registered for the address of the source is not expected to work on another address: Vaultwarden derives the WebAuthn identity from `DOMAIN` ([`webauthn.rs`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/api/core/two_factor/webauthn.rs#L36-L41)). Check those at the cutover.
+5. Open the organisations as an owner, and compare the organisation, its collections and its members with the source's.
+6. Skip this one in the rehearsal and do it at the cutover. It would show that a Bitwarden client that was logged in to the source stays logged in when its server URL already equals the target's `DOMAIN`, which proves that the key and `DOMAIN` were kept. The throwaway app has another `DOMAIN`, so it cannot show it. At the cutover, make it the first step of the verification, with the rollback as the safety net.
+7. Write down how long each step took, for the cutover plan.
+
+If the target is newer than a SQLite or MySQL source, checks 2 to 5 are the proof that [Check the versions](#check-the-versions) asks for.
+
+## Load the database
+
+Use the sub-section of the database type the provider named in point 1. If you do not know it, stop and ask: this guide has no way to guess it.
+
+These steps are the same for every type. The commands use the [Scalingo CLI](https://doc.scalingo.com/tools/cli/features) and your app name in place of `<app>`.
+
+- **Stop the web process while the data loads**, and start it after, as the README does for a restore ([Upgrade](../README.md#upgrade)). Note first the number of `web` containers (`scalingo --app <app> scale`, column `AMOUNT`) and use it for `<n>`. `--synchronous` waits until the change is done ([CLI source](https://github.com/Scalingo/cli/blob/1640dd5/cmd/scale.go#L20)).
+
+  ```
+  scalingo --app <app> scale --synchronous web:0
+  scalingo --app <app> scale --synchronous web:<n>
+  ```
+
+- **Check that the target holds no accounts.** This guide does not merge two sources: a load adds to what is there. Open the console with `scalingo --app <app> pgsql-console` ([Accessing](https://doc.scalingo.com/databases/postgresql/shared-resources/getting-started/accessing)), run this query, expect `0`, and leave with `\q`:
+
+  ```
+  SELECT count(*) FROM users;
+  ```
+
+- **Compare the row counts after the load.** Run this query in `pgsql-console` on the target, and on the source's copy (each sub-section says how). The five tables hold the accounts, the vault items, the organisations, the attachments and the Sends, and exist in [`src/db/schema.rs`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/db/schema.rs). The query is plain SQL that SQLite, MySQL, MariaDB and PostgreSQL all run. If a number differs, stop: do not go on, do not cut over. Save the query in a file named `counts.sql` too: the sub-sections run it on a local copy of the source.
+
+  ```
+  SELECT 'users', count(*) FROM users UNION ALL SELECT 'ciphers', count(*) FROM ciphers UNION ALL SELECT 'organizations', count(*) FROM organizations UNION ALL SELECT 'attachments', count(*) FROM attachments UNION ALL SELECT 'sends', count(*) FROM sends;
+  ```
+
+- **Open the tunnel.** Every load reaches the target's database from your workstation through a tunnel, which needs the SSH key of your Scalingo account ([Accessing](https://doc.scalingo.com/databases/postgresql/shared-resources/getting-started/accessing)). Leave this command running in its own terminal; `CTRL+C` closes the tunnel, and the default local port is `10000`. The user, the password and the database name are in the URL that `scalingo --app <app> env-get SCALINGO_POSTGRESQL_URL` prints ([Connecting](https://doc.scalingo.com/databases/postgresql/shared-resources/getting-started/connecting)). Open the tunnel again whenever that URL changes. Whether pgloader works through the tunnel, and whether the add-on's plan allows its connections, is not verified: the rehearsal proves it.
+
+  ```
+  scalingo --app <app> db-tunnel SCALINGO_POSTGRESQL_URL
+  ```
+
+**Back up before a SQLite or MySQL load**, so that a failed load can be redone. `backups-create` waits until the backup is finished ([CLI source](https://github.com/Scalingo/cli/blob/1640dd5/db/backup_create.go#L16-L54)). The PostgreSQL source has no backup: its add-on is replaced.
+
+```
+scalingo --app <app> --addon postgresql backups-create
+```
+
+**Restore the backup** after a failed SQLite or MySQL load. The CLI has no command that restores a backup: its features page lists `backups` and `backups-download` only ([CLI features](https://doc.scalingo.com/tools/cli/features)). Scalingo's procedure is to download the backup, unpack it and run `pg_restore` ([Restoring a database](https://doc.scalingo.com/databases/postgresql/shared-resources/guides/restoring)), with the web process stopped and the tunnel open. The last command is the one of [PostgreSQL source](#postgresql-source), with the unpacked backup as the file:
+
+```
+scalingo --app <app> --addon postgresql backups
+scalingo --app <app> --addon postgresql backups-download --backup <backup-id>
+tar -xvzf <archive>
+```
+
+### PostgreSQL source
+
+A restore with `--clean --if-exists` only drops and recreates what the dump contains ([Upgrade](../README.md#upgrade)), and Vaultwarden has already created its tables in the target's database when the app first started. A dump older than the target would leave the tables of the newer migrations in place, next to the dump's own list of migrations, and the next start would fail on tables that already exist. This is our reading of how the restore works, not something tested. So this source is always loaded into a fresh add-on, and the version rule of [Check the versions](#check-the-versions) (target at least as new as the source) is the only one. The procedure is not verified: the rehearsal proves it.
+
+1. Check that the target holds no accounts (the query above), then stop the web process.
+2. Replace the add-on. `addons` lists its ID and its plan. `addons-remove` asks you to type the ID, and destroys the add-on and its data ([CLI source](https://github.com/Scalingo/cli/blob/1640dd5/addons/destroy.go#L31-L44)). `addons-add` takes the same plan; Scalingo then sets `SCALINGO_POSTGRESQL_URL` and `DATABASE_URL` again ([Provisioning](https://doc.scalingo.com/databases/postgresql/shared-resources/getting-started/provisioning), [Connecting](https://doc.scalingo.com/databases/postgresql/shared-resources/getting-started/connecting)). Wait until the add-on is provisioned (a few seconds, says Scalingo), then open the tunnel again.
+
+   ```
+   scalingo --app <app> addons
+   scalingo --app <app> addons-remove <addon-id>
+   scalingo --app <app> addons-add postgresql <plan>
+   ```
+
+3. Compare the PostgreSQL version of the source (point 1 of the message) with the new add-on's: run `select version();` in `pgsql-console`. Scalingo provisions the default version, the latest 18 at the time of writing, and another one only through its support ([PostgreSQL versions](https://doc.scalingo.com/databases/postgresql/about/overview)). A dump is expected to load into a server of the same or a newer major version, and is not guaranteed to load into an older one ([`pg_dump`](https://www.postgresql.org/docs/current/app-pgdump.html), Notes). If the source is newer, stop and ask Scalingo's support.
+4. Restore the dump into the empty database: this is Scalingo's own command, run from your workstation ([Restoring a database](https://doc.scalingo.com/databases/postgresql/shared-resources/guides/restoring)). Use a `pg_restore` at least as new as the `pg_dump` that made the dump (`pg_restore --version`): this is a precaution, the PostgreSQL pages do not state it. `--clean` drops what is there, which is nothing in a fresh add-on.
+
+   ```
+   export SCALINGO_DATABASE_URL="postgresql://<user>:<password>@127.0.0.1:10000/<dbname>"
+   pg_restore --clean --if-exists --no-owner --no-privileges --no-comments --dbname "${SCALINGO_DATABASE_URL}" <dump_file>
+   ```
+
+5. Start the web process. Vaultwarden runs the migrations the dump lacks at its first start ([Check the versions](#check-the-versions)).
+
+Check: the row counts of the five tables equal the ones of the dump, and the log, `scalingo --app <app> logs -n 1000`, shows `Starting Vaultwarden <version>` and no `Error running migrations` ([`src/db/mod.rs`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/db/mod.rs#L533)).
+
+To count the dump, restore it into a throwaway PostgreSQL on your workstation and run `counts.sql` there ([PostgreSQL image](https://github.com/docker-library/docs/blob/master/postgres/README.md): `POSTGRES_PASSWORD` is required, `POSTGRES_DB` names the database, and `psql` and `pg_restore` run inside the container without a password). Use the image `postgres:<version>` of the source's major version (point 1 of the message). If `pg_restore` cannot connect, wait a few seconds and run it again. When the counts are checked, remove the local server and its copy of your data ([`docker container rm`](https://docs.docker.com/reference/cli/docker/container/rm/)).
+
+```
+docker run --name vaultwarden-source-copy -e POSTGRES_PASSWORD=<password> -e POSTGRES_DB=vaultwarden -d postgres:<version>
+docker exec -i vaultwarden-source-copy pg_restore --no-owner -U postgres -d vaultwarden < <dump_file>
+docker exec -i vaultwarden-source-copy psql -U postgres vaultwarden < counts.sql
+docker rm --force vaultwarden-source-copy
+```
+
+If it fails: do not retry on top. Repeat steps 2 to 5: removing the add-on and adding a new one gives an empty database each time. If the same dump fails again, ask your provider for a new one.
+
+### SQLite source
+
+Upstream documents this conversion and calls it unsupported and not robustly tested. Back up first, and rehearse. ([Using the PostgreSQL Backend](https://github.com/dani-garcia/vaultwarden/wiki/Using-the-PostgreSQL-Backend), "Migrating from SQLite to PostgreSQL".) The steps below are the wiki's, with Scalingo's tunnel in place of a local server.
+
+1. Take the `.backup` copy of point 2 of the message, and work on a copy of it. If the provider sent a straight copy with a `db.sqlite3-wal` file, keep the two together under matching names, as the wiki says ([Backing up your vault](https://github.com/dani-garcia/vaultwarden/wiki/Backing-up-your-vault)): loading only the main file loses the recent writes.
+2. Turn the write-ahead log off on your copy ([Running without WAL](https://github.com/dani-garcia/vaultwarden/wiki/Running-without-WAL-enabled#1-disable-wal-on-old-db)). Open the copy with `sqlite3 <copy>`, type the line below (the answer is `delete`), then `.quit`:
+
+   ```
+   PRAGMA journal_mode=delete;
+   ```
+
+3. Let the target create its tables, and do nothing else: the app must have started once on its empty database (no account created, nobody logged in), and then be stopped ([wiki](https://github.com/dani-garcia/vaultwarden/wiki/Using-the-PostgreSQL-Backend), step 3). An app made with the button has done it. To check, run this query in `pgsql-console` and expect more than `0` (the README uses it: [Upgrade](../README.md#upgrade)):
+
+   ```
+   SELECT count(*) FROM __diesel_schema_migrations;
+   ```
+
+4. Stop the web process, check that the target holds no accounts, take the backup, open the tunnel (all above).
+5. Install [pgloader](https://pgloader.readthedocs.io/en/latest/install.html) and write `bitwarden.load`, as the wiki gives it (read on 2026-11-27: check the wiki for a newer version of this file). Replace the `<...>` parts: the path of your copy, the user, password and database name of the target, and the tunnel's port.
+
+   ```
+   load database
+        from sqlite:///<path of the copy>
+        into postgresql://<user>:<password>@127.0.0.1:<port>/<dbname>
+        WITH data only, include no drop, reset sequences
+        EXCLUDING TABLE NAMES LIKE '__diesel_schema_migrations'
+        ALTER SCHEMA 'bitwarden' RENAME TO 'public'
+   ;
+   ```
+
+   The file excludes the list of migrations, so the target keeps its own. In pgloader's code the tables of a SQLite file have no schema of their own ([`sqlite.lisp`](https://github.com/dimitri/pgloader/blob/v3.6.10/src/sources/sqlite/sqlite.lisp#L82)), so the `ALTER SCHEMA` line probably changes nothing: it is kept as upstream gives it.
+
+6. Run `pgloader bitwarden.load` ([command line](https://pgloader.readthedocs.io/en/latest/pgloader.html)). The wiki says you may see warnings and that the load should complete. Then start the web process.
+
+Check: the row counts of the five tables on the target equal the ones of your copy: run the query above with `sqlite3 <copy> "<query>"` ([SQLite shell](https://www.sqlite.org/cli.html)).
+
+If it fails: pgloader reports errors, not only warnings: restore the target backup you took before the load (see "Restore the backup" above) and run the load again from the beginning. If the row counts differ from the source: do not go on. Restore the backup, and load again from a fresh copy.
+
+### MySQL or MariaDB source
+
+Upstream documents this conversion and calls it unsupported and not robustly tested. Back up first, and rehearse. ([Using the PostgreSQL Backend](https://github.com/dani-garcia/vaultwarden/wiki/Using-the-PostgreSQL-Backend), "Migrating from MySQL to PostgreSQL".) pgloader reads a running database, not a dump file, so the dump goes first into a throwaway local server, started with Docker ([MySQL image](https://github.com/docker-library/docs/blob/master/mysql/README.md), [MariaDB image](https://github.com/docker-library/docs/blob/master/mariadb/README.md), [`docker run`](https://docs.docker.com/reference/cli/docker/container/run/)).
+
+1. Start the local server, in the family of your source (point 1 of the message). The database is named `vaultwarden`, and the port is published on your machine only ([port publishing](https://docs.docker.com/engine/network/port-publishing/)). `<local port>` is `3306`, or another free port, for example `33306`, if a MySQL already runs on your workstation: use the same one in step 5. `<password>` is yours to choose, with letters and digits only: step 5 puts it in a URL.
+
+   **MariaDB**: the image `mariadb:<version>` of the source's version, and the variables `MARIADB_ROOT_PASSWORD` and `MARIADB_DATABASE`. Tested with 10.11.
+
+   ```
+   docker run --name vaultwarden-source-copy -e MARIADB_ROOT_PASSWORD=<password> -e MARIADB_DATABASE=vaultwarden -p 127.0.0.1:<local port>:3306 -d mariadb:<version>
+   ```
+
+   **MySQL**: the local server must log in with the `mysql_native_password` plugin. pgloader 3.x cannot use `caching_sha2_password`, the default of MySQL 8.0.4 and later: it stops with `QMYND:MYSQL-UNSUPPORTED-AUTHENTICATION` ([pgloader issue 782](https://github.com/dimitri/pgloader/issues/782), and tested on `mysql:8.4` with pgloader 3.6.7). Options written after the image name go to the server ([MySQL image](https://github.com/docker-library/docs/blob/master/mysql/README.md), "Configuration without a `cnf` file"). Take `<image>` and `<options>` from the line of your source's version:
+
+   - MySQL 8.0: `<image>` is `mysql:8.0` and `<options>` is `--default-authentication-plugin=mysql_native_password` ([`default_authentication_plugin`](https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_default_authentication_plugin)). The options of 8.4 below make an 8.0 server refuse to start, and `--authentication-policy` alone leaves pgloader unable to log in.
+   - MySQL 8.4: `<image>` is `mysql:8.4` and `<options>` is `--mysql-native-password=ON --authentication-policy=mysql_native_password`. The plugin is disabled by default in 8.4 ([native pluggable authentication](https://dev.mysql.com/doc/refman/8.4/en/native-pluggable-authentication.html)), and the second option makes it the plugin of new accounts, root included ([`authentication_policy`](https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_authentication_policy)).
+   - MySQL 9.x: the plugin was removed in MySQL 9.0.0 (same page of 8.4), so pgloader cannot read a 9.x server. Use the image and the options of 8.4, and load the 9.x dump into it: tested with a dump of MySQL 9.7 holding a few rows in each of the five tables, not with real data, so the rehearsal is the proof.
+   - An older MySQL: this guide does not cover it.
+
+   ```
+   docker run --name vaultwarden-source-copy -e MYSQL_ROOT_PASSWORD=<password> -e MYSQL_DATABASE=vaultwarden -p 127.0.0.1:<local port>:3306 -d <image> <options>
+   ```
+
+2. Load the dump into it, as the image's page shows ([MySQL image](https://github.com/docker-library/docs/blob/master/mysql/README.md), "Restoring data from dump files"; for the database name, [MariaDB, restoring dumps](https://mariadb.com/docs/server/clients-and-utilities/backup-restore-and-import-clients/mariadb-dump#restoring-dumps)). If it cannot connect, wait a few seconds and run it again. If the dump names a database of its own, the tables went there: use that name in step 5, in place of `vaultwarden`.
+
+   MySQL:
+
+   ```
+   docker exec -i vaultwarden-source-copy sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" vaultwarden' < <dump file>
+   ```
+
+   MariaDB (its client is `mariadb`, and the variable is its own):
+
+   ```
+   docker exec -i vaultwarden-source-copy sh -c 'exec mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" vaultwarden' < <dump file>
+   ```
+
+3. Let the target create its tables, and do nothing else, as in step 3 of the SQLite source.
+4. Stop the web process, check that the target holds no accounts, take the backup, open the tunnel (all above).
+5. Install the latest 3.x of [pgloader](https://pgloader.readthedocs.io/en/latest/install.html): the wiki warns that the official Ubuntu package is outdated and fails with newer PostgreSQL, and points to the [PostgreSQL Apt Repository](https://www.postgresql.org/download/linux/ubuntu/). `pgloader --version` shows what you have; pgloader's site also offers a 4.x build, which this guide does not cover. Write `vaultwarden.load`, as the wiki gives it, with the local server's address in place of the wiki's (read on 2026-11-27: check the wiki for a newer version of this file). The user is `root`, and the password and the port are those of step 1. The `ALTER SCHEMA` name is that of the MySQL database ([pgloader, MySQL](https://pgloader.readthedocs.io/en/latest/ref/mysql.html)). The wiki adds `?sslmode=require` to the PostgreSQL address if the connection needs SSL.
+
+   ```
+   load database
+        from mysql://root:<password>@127.0.0.1:<local port>/vaultwarden
+        into postgresql://<user>:<password>@127.0.0.1:<port>/<dbname>
+        WITH data only
+        EXCLUDING TABLE NAMES MATCHING '__diesel_schema_migrations'
+        ALTER SCHEMA 'vaultwarden' RENAME TO 'public'
+   ;
+   ```
+
+6. Run `pgloader vaultwarden.load`. The wiki says you may see warnings and that the load should complete; errors mean pgloader is probably outdated. Then start the web process. When the load is checked, remove the local server and its copy of your data: `docker rm --force vaultwarden-source-copy` ([`docker container rm`](https://docs.docker.com/reference/cli/docker/container/rm/)).
+
+Check: the row counts of the five tables on the target equal the ones of the local server: run `counts.sql` as in step 2, in place of the dump (`< counts.sql`).
+
+If it fails: pgloader reports errors, not only warnings: restore the target backup you took before the load (see "Restore the backup" above) and run the load again from the beginning. If the error is `QMYND:MYSQL-UNSUPPORTED-AUTHENTICATION`, the local server does not log in with `mysql_native_password`: remove it and start it again with the image and the options of step 1. Any other error: first check that pgloader is the latest 3.x. If the row counts differ from the source: do not go on. Restore the backup, and load again from a fresh copy.
+
+## Copy the files to the bucket
+
+The database holds the accounts and the vault; the signing key, the saved settings, the attachments and the Sends are files, and the app reads them from its bucket. Copy them with the AWS CLI ([install](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)); another S3 tool does as well, this guide does not cover it. How `aws s3 sync` behaves against each S3 provider is not verified: the rehearsal shows it for yours.
+
+The prefix must be exactly `vaultwarden/`: the app builds its storage address from it ([`scripts/start.sh`](https://github.com/incubateur-territoires/vaultwarden-scalingo/blob/main/scripts/start.sh)), and the README says the same ([Storage](../README.md#storage)). Under it, the app expects `rsa_key.pem`, `config.json`, `attachments/<item id>/<file id>` and `sends/…`, so keep the sub-folders. These names are the app's, not the source's: if the source changed `RSA_KEY_FILENAME`, `ATTACHMENTS_FOLDER` or `SENDS_FOLDER` (point 3 of the message), upload the key file it names as `vaultwarden/rsa_key.pem`, and the folders it names as `vaultwarden/attachments/` and `vaultwarden/sends/`. The commands below write `<key file>`, `<attachments folder>` and `<sends folder>`: these are `rsa_key.pem`, `attachments` and `sends`, unless the source renamed them. Do not copy `icon_cache/`: it is not needed. Copy only the key file, not the other `rsa_key*` files: `rsa_key.pem` is the only one Vaultwarden 1.37.5 reads ([`initialize_keys`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/auth.rs#L74-L95)).
+
+**Read `config.json` first.** What it holds wins over the app's environment ([`src/config.rs`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/config.rs#L287-L307)), and it can hold secrets: the admin token, the mail password ([wiki](https://github.com/dani-garcia/vaultwarden/wiki/Backing-up-your-vault)). Look for a `domain` key (the keys are the lowercase names of the settings): in the rehearsal it must not name the real address, so remove it from the copy; at the cutover it must equal the real `DOMAIN`. A `signups_allowed` or `admin_token` key overrides the app's `SIGNUPS_ALLOWED` and `ADMIN_TOKEN`. The log tells what it overrode (rehearsal check 1).
+
+**If the source keeps the attachments and the Sends in an S3 bucket**, bring them down first, in a terminal of their own, with the source's access key and not the app's: export `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` as in the next block, but with the source's values, and use the source's own `--endpoint-url`. Close that terminal when the downloads are done. The variables you export win over a profile of the configuration file and are what the CLI uses ([environment variables](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html)), so the two keys must not share a terminal: with the app's key, the source bucket would refuse the download (`AccessDenied`).
+
+```
+aws s3 sync s3://<source bucket>/<prefix>/attachments attachments --endpoint-url <source endpoint>
+aws s3 sync s3://<source bucket>/<prefix>/sends sends --endpoint-url <source endpoint>
+```
+
+Give the AWS CLI the access key of the app and the region of its bucket ([environment variables](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html)): `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are the app's, `AWS_REGION` is its `S3_REGION`, and `S3_BUCKET` and `S3_ENDPOINT` are read the same way (`scalingo --app <app> env-get S3_BUCKET`).
+
+```
+export AWS_ACCESS_KEY_ID=<access key>
+export AWS_SECRET_ACCESS_KEY=<secret key>
+export AWS_REGION=<S3_REGION>
+```
+
+**Only if the app has `S3_PATH_STYLE=true`**, also set the addressing style of the S3 commands ([S3 configuration](https://docs.aws.amazon.com/cli/latest/topic/s3-config.html), `addressing_style`). The AWS CLI has no environment variable for it, and `aws configure set` writes to `~/.aws/config` for good. `AWS_CONFIG_FILE` names the file the CLI reads and writes its settings to ([environment variables](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html)): point it at a file of its own, and delete that file with the end of the work.
+
+```
+export AWS_CONFIG_FILE="$PWD/aws-config-vaultwarden"
+aws configure set default.s3.addressing_style path
+```
+
+Copy the two files and the two folders ([`cp`](https://docs.aws.amazon.com/cli/latest/reference/s3/cp.html), [`sync`](https://docs.aws.amazon.com/cli/latest/reference/s3/sync.html), which copies new and updated files recursively, so running it again is safe; `--endpoint-url` is the S3 endpoint of your provider).
+
+```
+aws s3 cp <key file> s3://<S3_BUCKET>/vaultwarden/rsa_key.pem --endpoint-url <S3_ENDPOINT>
+aws s3 cp config.json s3://<S3_BUCKET>/vaultwarden/config.json --endpoint-url <S3_ENDPOINT>
+aws s3 sync <attachments folder> s3://<S3_BUCKET>/vaultwarden/attachments --endpoint-url <S3_ENDPOINT>
+aws s3 sync <sends folder> s3://<S3_BUCKET>/vaultwarden/sends --endpoint-url <S3_ENDPOINT>
+```
+
+If the app started before the key was there, it made its own `rsa_key.pem`, and the commands above overwrite it. The key and `config.json` are read only at start, so restart the app ([CLI features](https://doc.scalingo.com/tools/cli/features)); the attachments and the Sends need no restart.
+
+```
+scalingo --app <app> restart
+```
+
+Check: list the bucket ([`ls`](https://docs.aws.amazon.com/cli/latest/reference/s3/ls.html)) and count: the lines under `vaultwarden/attachments/` and `vaultwarden/sends/` are as many as the files in your two folders, and `vaultwarden/rsa_key.pem` and `vaultwarden/config.json` are there. The app adds its own files, such as `icon_cache/`: leave them.
+
+```
+aws s3 ls s3://<S3_BUCKET>/vaultwarden/ --recursive --summarize --endpoint-url <S3_ENDPOINT>
+```
+
+If it fails:
+
+- Wrong prefix: downloads of attachments and Sends fail, and nothing changes in the database. The path must be exactly `vaultwarden/`: copy the files again to the right place. Attachments and Sends need no restart; the key and `config.json` do.
+- The log shows `Private key '<path>' created correctly` ([`src/auth.rs`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/auth.rs#L94)): the app made a new signing key because it did not find `vaultwarden/rsa_key.pem`: a key uploaded under its own name, not as `rsa_key.pem`, is not found. Upload the right file as `vaultwarden/rsa_key.pem` and restart.
+- An S3 error in the log (`AccessDenied`, `NoSuchBucket`, a connection error): see Troubleshooting in the [README](../README.md#troubleshooting).
+
+## Set the settings
+
+The provider's answer to point 5 says which settings the source changed. Set them in the environment of the app with `env-set` ([CLI features](https://doc.scalingo.com/tools/cli/features)); it does not restart the app, and says so ([CLI source](https://github.com/Scalingo/cli/blob/1640dd5/env/edit.go#L56-L57)), so restart it after. A value that `config.json` also holds is overridden by `config.json`.
+
+```
+scalingo --app <app> env-set SMTP_HOST=<host> SMTP_FROM=<sender> SMTP_PORT=<port>
+```
+
+**Do not put a secret in that command**: `SMTP_PASSWORD`, `YUBICO_SECRET_KEY`, `DUO_SKEY` and `PUSH_INSTALLATION_KEY` are secrets. `env-set` prints every value it sets back to the terminal ([CLI source](https://github.com/Scalingo/cli/blob/1640dd5/env/edit.go#L53-L55)), and your shell keeps the command in its history. Type the value at a hidden prompt (bash or zsh) and give it to `env-set` on its standard input, as a `.env` line (`--file -`: [CLI source](https://github.com/Scalingo/cli/blob/1640dd5/env/edit.go#L135-L141), [usage](https://github.com/Scalingo/cli/blob/1640dd5/cmd/env.go#L96)); `> /dev/null` hides what the CLI prints back. Run it once per secret, with its name in place of `SMTP_PASSWORD`. The quotes keep `$`, `#` and `\` as they are, and the CLI's `.env` reader stops at a `'` inside the value: with such a value, use the dashboard instead (not verified).
+
+```
+printf 'SMTP password: '; read -rs SMTP_PASSWORD; echo
+printf "SMTP_PASSWORD='%s'\n" "$SMTP_PASSWORD" | scalingo --app <app> env-set --file - > /dev/null
+unset SMTP_PASSWORD
+```
+
+When every setting is set, restart the app:
+
+```
+scalingo --app <app> restart
+```
+
+- `DOMAIN`: the same as the source's. In the rehearsal, keep the throwaway app's own.
+- `SIGNUPS_ALLOWED`: it stays `false` during the migration.
+- The names of the README's [Optional settings](../README.md#optional-settings): `SMTP_HOST`, `SMTP_FROM`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`. The provider did not send the mail password: take it from your own mail account.
+- Push notifications, not in the form: `PUSH_ENABLED`, `PUSH_INSTALLATION_ID`, `PUSH_INSTALLATION_KEY` ([`.env.template`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/.env.template#L119-L121), which says the id and the key come from `https://bitwarden.com/host`).
+- Yubico, not in the form: `YUBICO_CLIENT_ID`, `YUBICO_SECRET_KEY`, and `YUBICO_SERVER` if you use your own server ([`.env.template`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/.env.template#L576-L578)).
+- Duo, not in the form: `DUO_IKEY`, `DUO_SKEY`, `DUO_HOST` ([`.env.template`](https://github.com/dani-garcia/vaultwarden/blob/1.37.5/.env.template#L586-L588)).
