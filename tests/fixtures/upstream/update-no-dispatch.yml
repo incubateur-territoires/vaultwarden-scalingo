@@ -1,0 +1,12 @@
+# Fixture: an update workflow nobody can start by hand.
+name: Update
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+permissions:
+  contents: read
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: scripts/set-version.sh VERSIONS WEB_VAULT_VERSION v1

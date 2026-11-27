@@ -1,0 +1,11 @@
+# Fixture: an update workflow with no schedule.
+name: Update
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: scripts/set-version.sh VERSIONS WEB_VAULT_VERSION v1
