@@ -188,6 +188,10 @@ start_ok "no version" "manifest without VAULTWARDEN_VERSION" "VAULTWARDEN_HOME=$
 start_eq "a manifest without the version must give version unknown" "$START_OUT" "-----> Starting Vaultwarden unknown (attachments, Sends and keys stored in s3://my-bucket)"
 start_eq "a manifest without the version must not write on stderr" "$START_ERR" ""
 start_clean
+start_ok "duplicate version" "manifest with a duplicated VAULTWARDEN_VERSION" "VAULTWARDEN_HOME=$START_HOME-duplicate-key"
+start_eq "an unparsable manifest must give version unknown" "$START_OUT" "-----> Starting Vaultwarden unknown (attachments, Sends and keys stored in s3://my-bucket)"
+start_eq "an unparsable manifest must report exactly one read_kv line on stderr" "$START_ERR" "read_kv: VAULTWARDEN_VERSION is defined more than once in $START_HOME-duplicate-key/manifest"
+start_clean
 
 # --- the secret rule rejects a script that prints a secret (stdout, stderr)
 expect_problem "must never print a secret" start_leak_selftest tests/fixtures/start/leaky/stdout.sh
