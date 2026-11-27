@@ -33,5 +33,23 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/actionlint" actionlint
           echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
 
+      # The runner image ships its own shellcheck; GITHUB_PATH puts this one first.
+      # The release publishes no checksum file: the digest below is the one GitHub
+      # shows for the asset (releases API, "digest"), checked against a download.
+      - name: Install shellcheck (pinned release, verified)
+        env:
+          SHELLCHECK_VERSION: "0.11.0"
+          SHELLCHECK_SHA256: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+        run: |
+          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz"
+          curl --proto '=https' --fail --silent --show-error --location --retry 3 \
+            --output "$RUNNER_TEMP/$archive" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$archive"
+          echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check -
+          mkdir "$RUNNER_TEMP/shellcheck"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/shellcheck" --strip-components=1 \
+            "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          echo "$RUNNER_TEMP/shellcheck" >> "$GITHUB_PATH"
+
       - name: make check
         run: make check

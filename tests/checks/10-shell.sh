@@ -14,6 +14,8 @@ shell_files() {
 }
 
 if optional_tool shellcheck; then
+  # The CI log shows which shellcheck ran (CI pins one, see ci.yml).
+  warn "shellcheck $(shellcheck --version | sed -n 's/^version: //p')"
   while IFS= read -r file; do
     if ! out="$(shellcheck -x "$file" 2>&1)"; then
       problem "$file" "shellcheck: $(strip_leading_blank_lines "$out")"

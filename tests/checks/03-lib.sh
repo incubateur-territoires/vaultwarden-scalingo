@@ -26,20 +26,29 @@ mkdir "$lib_dir/fake" "$lib_dir/scripts"
 : > "$lib_dir/scripts/some.sh"
 cat > "$lib_dir/fake/shellcheck" <<'FAKE'
 #!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: 9.8.7\nlicense: GNU General Public License, version 3\n'
+  exit 0
+fi
 printf '\nIn %s line 3:\necho $x\n     ^-- SC2086: Double quote.\n' "$2"
 exit 1
 FAKE
 chmod +x "$lib_dir/fake/shellcheck"
-lib_out="$(
+lib_all="$(
   cd "$lib_dir" || exit 1
   PATH="$lib_dir/fake:$PATH"
   export CHECK_LOG="$lib_dir/log"
   # shellcheck source=/dev/null
-  . "$ROOT/tests/checks/10-shell.sh" | grep '^check: scripts/'
+  . "$ROOT/tests/checks/10-shell.sh"
 )"
+lib_out="$(printf '%s\n' "$lib_all" | grep '^check: scripts/')"
 # shellcheck disable=SC2016 # the expected report holds a literal $x
 if [ "$lib_out" != 'check: scripts/some.sh: shellcheck: In scripts/some.sh line 3: | echo $x |      ^-- SC2086: Double quote.' ]; then
   problem tests/checks/10-shell.sh "a tool's leading empty line must not show in the problem (got '$lib_out')"
 fi
+# The run says which shellcheck it used, so a CI log shows the pinned one.
+if ! printf '%s\n' "$lib_all" | grep -qx 'check: shellcheck 9.8.7'; then
+  problem tests/checks/10-shell.sh "the run must print the shellcheck version it used (got '$lib_all')"
+fi
 rm -rf "$lib_dir"
-unset lib_dir lib_out
+unset lib_dir lib_out lib_all
