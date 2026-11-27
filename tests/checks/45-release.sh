@@ -78,3 +78,35 @@ broken_yaml_is_one_problem
 if [ -f .github/workflows/release.yml ]; then
   check_release .github/workflows/release.yml scripts/package-release.sh
 fi
+
+# check_dispatch_targets WORKFLOW: every workflow that WORKFLOW starts with
+# `gh workflow run NAME` sits next to it and has a workflow_dispatch trigger.
+# GitHub refuses the dispatch otherwise, and the release workflow only runs
+# the command when the maintainer publishes a release.
+check_dispatch_targets() {
+  local workflow="$1" name target
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    target="$(dirname "$workflow")/$name"
+    if [ ! -f "$target" ]; then
+      problem "$workflow" "gh workflow run $name: no such workflow next to it"
+    elif ! ruby -ryaml -e '
+      doc = YAML.safe_load(File.read(ARGV[0]), aliases: true)
+      on = doc["on"] || doc[true] || {}
+      exit(on.is_a?(Hash) && on.key?("workflow_dispatch") ? 0 : 1)
+    ' "$target" 2> /dev/null; then
+      problem "$workflow" "gh workflow run $name: $name has no workflow_dispatch trigger"
+    fi
+  done <<EOF
+$(grep -ohE 'gh workflow run +[A-Za-z0-9_.-]+' "$workflow" | awk '{ print $4 }' | sort -u)
+EOF
+}
+
+expect_no_problem check_dispatch_targets tests/fixtures/dispatch/ok/release.yml
+expect_no_problem check_dispatch_targets tests/fixtures/dispatch/none/release.yml
+expect_problem "ci.yml has no workflow_dispatch trigger" check_dispatch_targets tests/fixtures/dispatch/no-dispatch/release.yml
+expect_problem "gh workflow run ci.yml: no such workflow" check_dispatch_targets tests/fixtures/dispatch/missing/release.yml
+
+if [ -f .github/workflows/release.yml ]; then
+  check_dispatch_targets .github/workflows/release.yml
+fi

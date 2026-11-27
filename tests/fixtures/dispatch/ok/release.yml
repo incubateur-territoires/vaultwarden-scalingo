@@ -1,0 +1,11 @@
+# Fixture: a workflow that starts ci.yml.
+name: Release
+on:
+  release:
+    types: [published]
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          gh workflow run ci.yml --ref "$BRANCH"
