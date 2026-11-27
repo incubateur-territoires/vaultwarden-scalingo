@@ -3,12 +3,16 @@ name: Release
 # Builds the Vaultwarden release asset that the Scalingo build installs, and
 # proves it runs on the Scalingo stacks. Uploading it is done only when the
 # maintainer publishes a release: this workflow never creates a tag or a release.
+# Once that release carries its asset, the pin job opens the pull request that
+# pins it in VERSIONS and starts ci.yml on its branch. Merging it is the
+# maintainer's act: that is what makes Scalingo builds install the release.
 on:
   pull_request:
     paths:
       - VERSIONS
       - .github/workflows/release.yml
       - scripts/package-release.sh
+      - scripts/pin-release.sh
       - scripts/set-version.sh
       - scripts/lib/kv.sh
   workflow_dispatch:
@@ -220,18 +224,16 @@ jobs:
       - name: Pin the release in VERSIONS
         id: pin
         run: |
-          [[ $TAG =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "::error::The tag '$TAG' is not a plain tag name: pin it by hand."; exit 1; }
           (cd dist && sha256sum --check SHA256SUMS)
-          sha256="$(cut -d ' ' -f 1 dist/SHA256SUMS)"
-          [[ $sha256 =~ ^[0-9a-f]{64}$ ]] || { echo "::error::dist/SHA256SUMS does not start with a sha256."; exit 1; }
+          # Checks the tag, the checksum and the repository, then rewrites VERSIONS
+          # (tests/checks/36-pin-release.sh). It prints the checksum it pinned.
+          sha256="$(scripts/pin-release.sh VERSIONS "$TAG" dist/SHA256SUMS "$GITHUB_REPOSITORY")"
           branch="release/pin-$TAG"
           if git ls-remote --exit-code --heads origin "$branch" > /dev/null; then
             echo "::error::The branch $branch already exists. Delete it (or merge its pull request), then re-run this job."
             exit 1
           fi
           git switch --create "$branch"
-          scripts/set-version.sh VERSIONS RELEASE_TAG "$TAG"
-          scripts/set-version.sh VERSIONS RELEASE_ASSET_SHA256 "$sha256"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit --all --message "chore(release): deploy $TAG (Vaultwarden $VAULTWARDEN_VERSION, web vault $WEB_VAULT_VERSION)"
@@ -258,4 +260,8 @@ jobs:
             exit 1
           fi
           # Opened with GITHUB_TOKEN, the pull request starts no workflow by itself.
-          gh workflow run ci.yml --ref "$BRANCH"
+          # A re-run of this job stops at the existing branch: say what to do by hand.
+          if ! gh workflow run ci.yml --ref "$BRANCH"; then
+            echo "::error::The pull request is open, but GitHub did not start its checks. Start them with: gh workflow run ci.yml --ref $BRANCH (do not re-run this job: the branch exists)."
+            exit 1
+          fi

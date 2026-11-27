@@ -1,0 +1,14 @@
+# Fixture: a dispatch whose failure message does not give the command.
+name: Release
+on:
+  release:
+    types: [published]
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          if ! gh workflow run ci.yml --ref "$BRANCH"; then
+            echo "::error::The checks did not start."
+            exit 1
+          fi
