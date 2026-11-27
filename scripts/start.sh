@@ -75,8 +75,11 @@ if [ -z "${ADMIN_TOKEN:-}" ]; then
   unset ADMIN_TOKEN
 fi
 
-if ! version="$(read_kv "$VAULTWARDEN_HOME/manifest" VAULTWARDEN_VERSION)"; then
-  version=unknown
+# The version is cosmetic: a missing manifest is not worth a line on stderr. A
+# manifest that exists but cannot be parsed (a duplicated key) still is.
+version=unknown
+if [ -f "$VAULTWARDEN_HOME/manifest" ]; then
+  version="$(read_kv "$VAULTWARDEN_HOME/manifest" VAULTWARDEN_VERSION)" || version=unknown
 fi
 echo "-----> Starting Vaultwarden $version (attachments, Sends and keys stored in s3://$S3_BUCKET)"
 
