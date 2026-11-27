@@ -18,14 +18,6 @@ fail() {
   exit 1
 }
 
-sha256_of() {
-  if command -v sha256sum > /dev/null 2>&1; then
-    sha256sum "$1" | cut -d ' ' -f 1
-  else
-    shasum -a 256 "$1" | cut -d ' ' -f 1
-  fi
-}
-
 [ "$#" -eq 3 ] || fail "usage: package-release.sh BINARY WEB_VAULT_TARBALL OUT_DIR"
 binary="$1"
 web_vault_tarball="$2"
@@ -36,6 +28,8 @@ out_dir="$3"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/kv.sh
 . "$root/scripts/lib/kv.sh"
+# shellcheck source=scripts/lib/sha256.sh
+. "$root/scripts/lib/sha256.sh"
 vaultwarden_version="$(read_kv "$root/VERSIONS" VAULTWARDEN_VERSION)"
 web_vault_version="$(read_kv "$root/VERSIONS" WEB_VAULT_VERSION)"
 source_commit="${GITHUB_SHA:-$(git -C "$root" rev-parse HEAD)}"

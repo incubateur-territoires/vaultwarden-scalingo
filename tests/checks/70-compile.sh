@@ -29,14 +29,16 @@ compile_package() {
 # compile_run LABEL WORK TAG PIN URL [STACK]: run bin/compile on a copy of the
 # scripts and a VERSIONS that pins TAG and PIN (an empty TAG or PIN leaves that
 # key empty; the word "omit" drops the key). The cache is WORK/cache and
-# survives between runs. Sets COMPILE_RC, COMPILE_OUT, COMPILE_ERR, COMPILE_BUILD.
+# survives between runs. A non-empty COMPILE_NO_REPOSITORY also drops
+# RELEASE_REPOSITORY. Sets COMPILE_RC, COMPILE_OUT, COMPILE_ERR, COMPILE_BUILD.
 compile_run() {
   local label="$1" work="$2" tag="$3" pin="$4" url="$5" stack="${6:-}"
-  local build="$work/build-$label" envs=()
+  local build="$work/build-$label" envs=() drop='^RELEASE_TAG=\|^RELEASE_ASSET_SHA256='
+  [ -z "${COMPILE_NO_REPOSITORY:-}" ] || drop="$drop\\|^RELEASE_REPOSITORY="
   rm -rf "$build"
   mkdir -p "$build" "$work/cache" "$work/env"
   cp -R scripts "$build/scripts"
-  grep -v '^RELEASE_TAG=\|^RELEASE_ASSET_SHA256=' VERSIONS > "$build/VERSIONS"
+  grep -v "$drop" VERSIONS > "$build/VERSIONS"
   [ "$tag" = omit ] || echo "RELEASE_TAG=$tag" >> "$build/VERSIONS"
   [ "$pin" = omit ] || echo "RELEASE_ASSET_SHA256=$pin" >> "$build/VERSIONS"
   [ -z "$url" ] || envs[0]="VAULTWARDEN_RELEASE_URL=$url"
@@ -62,11 +64,22 @@ compile_expect_failure() {
 }
 
 compile_check() {
-  local work vw_version web_version line want
+  local work vw_version web_version line want flag
 
+  # One sha256_of, in scripts/lib/sha256.sh: no script keeps a copy of its own.
+  for line in scripts/*.sh tests/lib.sh; do
+    if grep -q '^sha256_of()' "$line"; then
+      problem "$line" "must source scripts/lib/sha256.sh, not define sha256_of itself"
+    fi
+  done
+  [ -f scripts/lib/sha256.sh ] || problem scripts/lib/sha256.sh "is missing"
   vw_version="$(read_kv VERSIONS VAULTWARDEN_VERSION)"
   web_version="$(read_kv VERSIONS WEB_VAULT_VERSION)"
   work="$(mktemp -d)"
+  printf abc > "$work/abc"
+  if [ "$(sha256_of "$work/abc")" != ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad ]; then
+    problem scripts/lib/sha256.sh "sha256_of must print the sha256 of the file"
+  fi
   compile_package "$work" "#!/bin/sh
 echo \"Vaultwarden $vw_version\"
 echo \"Web-Vault $web_version\""
@@ -89,9 +102,11 @@ echo \"Web-Vault $web_version\""
   [ -x "$COMPILE_BUILD/vaultwarden/vaultwarden" ] || problem scripts/compile.sh "BUILD_DIR/vaultwarden/vaultwarden must be installed and executable"
   [ -f "$COMPILE_BUILD/vaultwarden/web-vault/index.html" ] || problem scripts/compile.sh "BUILD_DIR/vaultwarden/web-vault must be installed"
   [ -f "$COMPILE_BUILD/vaultwarden/manifest" ] || problem scripts/compile.sh "BUILD_DIR/vaultwarden/manifest must be installed"
-  [ -f "$work/cache/$COMPILE_PIN.tar.gz" ] || problem scripts/compile.sh "a verified asset must be kept in CACHE_DIR as <sha256>.tar.gz"
+  [ -f "$work/cache/vaultwarden/$COMPILE_PIN.tar.gz" ] || problem scripts/compile.sh "a verified asset must be kept in CACHE_DIR/vaultwarden/ as <sha256>.tar.gz"
 
-  echo stale > "$work/cache/${COMPILE_ZERO}.tar.gz"
+  # The cache is shared with the other buildpacks: only vaultwarden/ is ours.
+  echo stale > "$work/cache/vaultwarden/${COMPILE_ZERO}.tar.gz"
+  echo other > "$work/cache/other.tar.gz"
   compile_run cached "$work" "$COMPILE_TAG" "$COMPILE_PIN" "file://$work/missing.tar.gz" scalingo-24
   if [ "$COMPILE_RC" -ne 0 ]; then
     problem scripts/compile.sh "a cached asset must be reused without the URL (got $COMPILE_RC: $COMPILE_ERR)"
@@ -100,10 +115,11 @@ echo \"Web-Vault $web_version\""
     *"$want"*) ;;
     *) problem scripts/compile.sh "a cached asset must print \"$want\" (got: $COMPILE_OUT)" ;;
   esac
-  [ ! -e "$work/cache/${COMPILE_ZERO}.tar.gz" ] || problem scripts/compile.sh "the cache must drop the asset of an earlier pin"
+  [ ! -e "$work/cache/vaultwarden/${COMPILE_ZERO}.tar.gz" ] || problem scripts/compile.sh "the cache must drop the asset of an earlier pin"
+  [ -f "$work/cache/other.tar.gz" ] || problem scripts/compile.sh "the cache cleanup must not delete files outside CACHE_DIR/vaultwarden/"
 
   # A cached file that does not match the pin is not trusted.
-  echo corrupt > "$work/cache/$COMPILE_PIN.tar.gz"
+  echo corrupt > "$work/cache/vaultwarden/$COMPILE_PIN.tar.gz"
   compile_run corrupt-cache "$work" "$COMPILE_TAG" "$COMPILE_PIN" "$COMPILE_URL" scalingo-24
   if [ "$COMPILE_RC" -ne 0 ]; then
     problem scripts/compile.sh "a corrupt cached asset must be downloaded again (got $COMPILE_RC: $COMPILE_ERR)"
@@ -116,7 +132,7 @@ echo \"Web-Vault $web_version\""
   if [ -e "$COMPILE_BUILD/vaultwarden" ]; then
     problem scripts/compile.sh "a wrong checksum must extract nothing into BUILD_DIR"
   fi
-  if [ -n "$(ls -A "$work/cache")" ]; then
+  if [ -n "$(find "$work/cache" -type f)" ]; then
     problem scripts/compile.sh "a wrong checksum must keep nothing in CACHE_DIR"
   fi
 
@@ -125,6 +141,8 @@ echo \"Web-Vault $web_version\""
   compile_expect_failure "an empty pin" "VERSIONS pins no release yet (RELEASE_TAG is empty). Publish a release of this repository, then merge the pull request that pins it."
   compile_run no-sha "$work" "$COMPILE_TAG" "" "$COMPILE_URL"
   compile_expect_failure "a tag without checksum" "VERSIONS sets RELEASE_TAG but RELEASE_ASSET_SHA256 is empty. Refusing to install a release that is not verified."
+  COMPILE_NO_REPOSITORY=1 compile_run omitted-repository "$work" "$COMPILE_TAG" "$COMPILE_PIN" "$COMPILE_URL"
+  compile_expect_failure "a VERSIONS without RELEASE_REPOSITORY" "Cannot read RELEASE_REPOSITORY from VERSIONS."
   compile_run omitted-tag "$work" omit "$COMPILE_PIN" "$COMPILE_URL"
   compile_expect_failure "a VERSIONS without RELEASE_TAG" "Cannot read RELEASE_TAG from VERSIONS."
   compile_run omitted-sha "$work" "$COMPILE_TAG" omit "$COMPILE_URL"
@@ -151,15 +169,40 @@ echo \"Web-Vault $web_version\""
   if ! grep -qx -- "=https" "$work/curl.args" 2> /dev/null; then
     problem scripts/compile.sh "curl must be restricted with --proto '=https'"
   fi
+  # Timeouts, so a stalled download fails the build instead of hanging it; each
+  # retry gets its own, so they must not replace --retry.
+  for flag in --connect-timeout --max-time --retry; do
+    if ! grep -qx -- "$flag" "$work/curl.args" 2> /dev/null; then
+      problem scripts/compile.sh "curl must be given $flag"
+    fi
+  done
 
   # A binary that does not run: the stack message, with the stack when known.
   compile_package "$work/broken" '#!/bin/sh
+echo "loader: libssl.so.3: cannot open shared object file" >&2
 exit 127'
   compile_run broken "$work" "$COMPILE_TAG" "$COMPILE_PIN" "$COMPILE_URL" scalingo-24
   compile_expect_failure "a binary that fails --version" "The Vaultwarden binary does not run on stack scalingo-24. Supported stacks: scalingo-24, scalingo-26."
+  # What the binary said is printed, so the cause shows in the build log.
+  case "$COMPILE_ERR" in
+    *"loader: libssl.so.3: cannot open shared object file"*) ;;
+    *) problem scripts/compile.sh "a binary that fails --version must have its stderr printed (got: $COMPILE_ERR)" ;;
+  esac
   rm -rf "$work/cache"
   compile_run broken-unknown "$work" "$COMPILE_TAG" "$COMPILE_PIN" "$COMPILE_URL"
   compile_expect_failure "a binary that fails --version, stack unknown" "The Vaultwarden binary does not run on stack unknown. Supported stacks: scalingo-24, scalingo-26."
+
+  # tar fails (a full disk, a damaged asset): a message, not a silent exit.
+  mkdir -p "$work/tarbin"
+  printf '#!/bin/sh\necho "tar: fake failure" >&2\nexit 2\n' > "$work/tarbin/tar"
+  chmod +x "$work/tarbin/tar"
+  COMPILE_PATH="$work/tarbin:$PATH"
+  compile_run tar-fails "$work" "$COMPILE_TAG" "$COMPILE_PIN" "$COMPILE_URL" scalingo-24
+  COMPILE_PATH="$PATH"
+  compile_expect_failure "a tar that fails" "Could not extract $COMPILE_ASSET into the build directory. Check that the build has disk space left, then deploy again."
+
+  # bin/compile stays compatible with older scripts/compile.sh.
+  grep -qi 'backward compatible' bin/compile || problem bin/compile "must say it has to stay backward compatible"
 
   # bin/compile hands its three arguments to the deployed scripts/compile.sh.
   mkdir -p "$work/tramp/scripts"

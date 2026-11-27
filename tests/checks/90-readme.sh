@@ -28,6 +28,7 @@ DOMAIN
 VERSIONS pins no release yet
 Could not download
 Checksum mismatch
+Could not extract
 The Vaultwarden binary does not run on stack"
 # What the Upgrade section must give: the backup, then the deploy.
 README_BACKUP_CMD="backups-create"
