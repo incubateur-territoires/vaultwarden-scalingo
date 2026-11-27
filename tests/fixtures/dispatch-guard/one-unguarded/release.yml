@@ -1,0 +1,16 @@
+# Fixture: one dispatch is guarded, a second one of the same workflow is not.
+name: Release
+on:
+  release:
+    types: [published]
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          if ! gh workflow run ci.yml --ref "$BRANCH"; then
+            echo "::error::The pull request is open but its checks did not start. Run: gh workflow run ci.yml --ref $BRANCH"
+            exit 1
+          fi
+      - run: |
+          gh workflow run ci.yml --ref "$OTHER"

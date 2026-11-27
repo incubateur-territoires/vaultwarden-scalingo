@@ -1,0 +1,14 @@
+# Fixture: a dispatch that tells the operator what to run when it fails.
+name: Release
+on:
+  release:
+    types: [published]
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          if ! gh workflow run ci.yml --ref "$BRANCH"; then
+            echo "::error::The pull request is open but its checks did not start. Run: gh workflow run ci.yml --ref $BRANCH"
+            exit 1
+          fi
