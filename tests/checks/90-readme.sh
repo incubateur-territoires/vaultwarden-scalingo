@@ -29,13 +29,15 @@ VERSIONS pins no release yet
 Could not download
 Checksum mismatch
 The Vaultwarden binary does not run on stack"
-# What the Upgrade section must give, in this order: the backup, the deploy, the rollback.
+# What the Upgrade section must give: the backup, then the deploy.
 README_BACKUP_CMD="backups-create"
 README_DEPLOY_CMD="archive/refs/heads/main.tar.gz"
-README_ROLLBACK_CMD="archive/<previous-commit>.tar.gz"
-# How the operator learns whether a migration ran, and which commit to roll back to.
+# The rollback restarts the app, which keeps running the version that was live: it never
+# deploys a previous commit, which would run the migrations again on the restored database.
+README_RESTART_CMD="scalingo --app <app> restart"
+README_REDEPLOY_CMD="archive/<previous-commit>"
+# How the operator learns whether a migration ran.
 README_MIGRATION_QUERY="SELECT count(*) FROM __diesel_schema_migrations;"
-README_PREVIOUS_COMMIT="--grep='chore(release): deploy'"
 
 # readme_section FILE HEADING: the lines under "## HEADING", up to the next "## ".
 readme_section() {
@@ -107,16 +109,15 @@ EOF
     problem "$file" "Upgrade must give the backup command before the deploy command"
   fi
   case "$section" in
-    *"$README_ROLLBACK_CMD"*) ;;
-    *) problem "$file" "Upgrade must give the rollback command (a URL ending $README_ROLLBACK_CMD)" ;;
+    *"$README_RESTART_CMD"*) ;;
+    *) problem "$file" "Upgrade must give the restart command of the rollback ($README_RESTART_CMD)" ;;
+  esac
+  case "$section" in
+    *"$README_REDEPLOY_CMD"*) problem "$file" "Upgrade must not redeploy a previous commit: restart the app instead" ;;
   esac
   case "$section" in
     *"$README_MIGRATION_QUERY"*) ;;
     *) problem "$file" "Upgrade must give the migration count query ($README_MIGRATION_QUERY)" ;;
-  esac
-  case "$section" in
-    *"$README_PREVIOUS_COMMIT"*) ;;
-    *) problem "$file" "Upgrade must say how to find the previous commit ($README_PREVIOUS_COMMIT)" ;;
   esac
 
   section="$(readme_section "$file" "Troubleshooting")"
@@ -156,9 +157,14 @@ if [ -f README.md ]; then
   expect_mutant_problem "starting with 'DOMAIN'" '^| *DOMAIN'
   expect_mutant_problem "Upgrade must give the backup command" 'backups-create'
   expect_mutant_problem "Upgrade must give the deploy command" 'archive/refs/heads/main'
-  expect_mutant_problem "Upgrade must give the rollback command" 'archive/<previous-commit>'
+  expect_mutant_problem "Upgrade must give the restart command of the rollback" '^ *scalingo --app <app> restart$'
   expect_mutant_problem "Upgrade must give the migration count query" 'SELECT count'
-  expect_mutant_problem "Upgrade must say how to find the previous commit" "grep='chore(release): deploy'"
   expect_mutant_problem "deploy button must link to" 'cdn.scalingo.com/deploy/button.svg'
+  redeploy="$(mktemp)"
+  sed '/backups-create/a\
+scalingo --app <app> deploy https://example.org/archive/<previous-commit>.tar.gz
+' README.md > "$redeploy"
+  expect_problem "must not redeploy a previous commit" check_readme "$redeploy"
+  rm -f "$redeploy"
 fi
 check_readme README.md
