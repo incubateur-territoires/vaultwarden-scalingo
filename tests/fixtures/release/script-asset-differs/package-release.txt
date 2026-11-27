@@ -1,0 +1,3 @@
+# Fixture: the lines of the packaging script that the rules read.
+ASSET_NAME=other-name.tar.gz
+. "$root/scripts/lib/kv.sh"

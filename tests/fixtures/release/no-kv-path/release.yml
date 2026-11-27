@@ -1,0 +1,20 @@
+# Fixture: a minimal release workflow; the other directories each break one rule.
+name: Release
+on:
+  pull_request:
+    paths:
+      - VERSIONS
+      - .github/workflows/release.yml
+      - scripts/package-release.sh
+env:
+  ASSET: asset.tar.gz
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: . scripts/lib/kv.sh && scripts/package-release.sh a b dist
+      - uses: actions/upload-artifact@v7
+        with:
+          path: |
+            dist/asset.tar.gz
+            dist/SHA256SUMS
